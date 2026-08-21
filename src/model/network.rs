@@ -1,0 +1,109 @@
+//! 网络连接查询的领域模型。
+
+use serde::{Deserialize, Serialize};
+
+/// 端点使用的传输层协议。
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub enum NetworkProtocol {
+    Tcp,
+    Udp,
+}
+
+impl NetworkProtocol {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Tcp => "TCP",
+            Self::Udp => "UDP",
+        }
+    }
+}
+
+/// 端点使用的 IP 地址版本。
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub enum IpVersion {
+    V4,
+    V6,
+}
+
+impl IpVersion {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::V4 => "IPv4",
+            Self::V6 => "IPv6",
+        }
+    }
+}
+
+/// TCP 连接状态；UDP 没有连接状态。
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub enum TcpState {
+    Listen,
+    Established,
+    SynSent,
+    SynReceived,
+    FinWait1,
+    FinWait2,
+    CloseWait,
+    Closing,
+    LastAck,
+    TimeWait,
+    Closed,
+    DeleteTcb,
+    Unknown,
+}
+
+impl TcpState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Listen => "LISTENING",
+            Self::Established => "ESTABLISHED",
+            Self::SynSent => "SYN_SENT",
+            Self::SynReceived => "SYN_RECEIVED",
+            Self::FinWait1 => "FIN_WAIT_1",
+            Self::FinWait2 => "FIN_WAIT_2",
+            Self::CloseWait => "CLOSE_WAIT",
+            Self::Closing => "CLOSING",
+            Self::LastAck => "LAST_ACK",
+            Self::TimeWait => "TIME_WAIT",
+            Self::Closed => "CLOSED",
+            Self::DeleteTcb => "DELETE_TCB",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+/// 一个由 Windows 网络表返回并经过格式化的网络端点。
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct NetworkEndpoint {
+    /// TCP 或 UDP，由 IP Helper API 的表类型决定。
+    pub protocol: NetworkProtocol,
+    /// IPv4 或 IPv6，由查询地址族决定。
+    pub ip_version: IpVersion,
+    /// 已格式化的本地地址，不含端口。
+    pub local_address: String,
+    /// 本地端口号，来自 IP Helper 的网络字节序字段。
+    pub local_port: u16,
+    /// 已格式化的远端地址；监听端口使用空字符串。
+    pub remote_address: String,
+    /// 远端端口号；UDP 和监听端口为 `None`。
+    pub remote_port: Option<u16>,
+    /// TCP 状态；UDP 为 `None`。
+    pub state: Option<TcpState>,
+    /// 创建端点的进程 PID。
+    pub pid: u32,
+    /// 进程快照中解析出的可执行文件名；进程退出时为空。
+    pub process_name: String,
+}
+
+impl NetworkEndpoint {
+    pub fn local_display(&self) -> String {
+        format!("{}:{}", self.local_address, self.local_port)
+    }
+
+    pub fn remote_display(&self) -> String {
+        match self.remote_port {
+            Some(port) => format!("{}:{port}", self.remote_address),
+            None => "-".to_owned(),
+        }
+    }
+}

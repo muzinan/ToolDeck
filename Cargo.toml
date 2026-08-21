@@ -1,0 +1,42 @@
+[package]
+name = "windows-toolbox"
+version = "0.1.0"
+edition = "2024"
+description = "A Windows-native toolbox for file locks, ports, and process relationships."
+license = "MIT OR Apache-2.0"
+repository = "https://example.invalid/windows-toolbox"
+
+[dependencies]
+anyhow = "1.0"
+directories = "6.0"
+eframe = { version = "0.32.3", default-features = false, features = ["default_fonts", "glow", "persistence"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+windows = { version = "0.61.3", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Registry",
+    "Win32_System_RestartManager",
+    "Win32_System_Threading",
+    "Win32_System_Time",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+embed-resource = "2.5.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
