@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::AppError;
 
+/// 仅用于新实例唤醒主窗口的保留工具 ID，不暴露为命令行或工具注册表项。
+const ACTIVATE_TOOL_ID: &str = "__windows_toolbox_activate__";
+
 /// 发送到工具模块的结构化输入，不允许调用方直接篡改工具 UI 状态。
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ToolInvocation {
@@ -23,6 +26,19 @@ pub enum ToolPayload {
 }
 
 impl ToolInvocation {
+    /// 创建仅用于单实例 IPC 的窗口激活消息，序列化格式仍是兼容的 ToolInvocation JSON。
+    pub fn activate() -> Self {
+        Self {
+            tool_id: ACTIVATE_TOOL_ID.to_owned(),
+            payload: ToolPayload::None,
+        }
+    }
+
+    /// 判断消息是否仅请求恢复并聚焦主窗口，不应触发工具导航或错误提示。
+    pub fn is_activate(&self) -> bool {
+        self.tool_id == ACTIVATE_TOOL_ID && self.payload == ToolPayload::None
+    }
+
     pub fn file_lock(path: PathBuf) -> Self {
         Self {
             tool_id: "file-lock".to_owned(),
@@ -202,5 +218,21 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn activate_message_is_internal_and_round_trips_through_json() {
+        let invocation = ToolInvocation::activate();
+        assert!(invocation.is_activate());
+
+        let encoded = serde_json::to_string(&invocation).unwrap();
+        let decoded: ToolInvocation = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, invocation);
+        assert!(decoded.is_activate());
+    }
+
+    #[test]
+    fn parse_without_arguments_keeps_existing_none_semantics() {
+        assert_eq!(ToolInvocation::parse(Vec::<OsString>::new()).unwrap(), None);
     }
 }

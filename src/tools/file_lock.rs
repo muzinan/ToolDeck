@@ -3,15 +3,20 @@
 
 use std::path::PathBuf;
 
-use eframe::egui::{self, Color32, RichText, TextEdit};
+use eframe::egui::{self, RichText, TextEdit};
 
 use crate::{
-    core::{actions::AppAction, invocation::ToolPayload, worker::TaskResult},
+    core::{
+        actions::AppAction,
+        invocation::{ToolInvocation, ToolPayload},
+        worker::TaskResult,
+    },
     model::{AppError, FileLockResult},
     tools::{
         ToolModule, ToolUiContext,
-        registry::{ToolCategory, ToolDescriptor},
+        registry::{ToolCategory, ToolDescriptor, ToolIcon},
     },
+    ui,
 };
 
 #[derive(Default)]
@@ -28,7 +33,7 @@ impl ToolModule for FileLockTool {
             name: "文件占用",
             description: "查询哪个进程正在使用文件",
             category: ToolCategory::File,
-            icon: "F",
+            icon: ToolIcon::FileLock,
             keywords: &[
                 "file",
                 "lock",
@@ -48,22 +53,30 @@ impl ToolModule for FileLockTool {
             "文件占用",
             "使用 Windows Restart Manager 查找正在占用文件的进程。",
         );
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            ui.add_sized(
-                [ui.available_width() - 90.0, 32.0],
-                TextEdit::singleline(&mut self.path).hint_text("输入文件完整路径或直接拖入文件"),
-            );
-            let query = ui.add_enabled(!self.busy, egui::Button::new("查询"));
-            if query.clicked() {
-                actions.extend(self.start_query());
-            }
+        ui.add_space(ui::SPACE_16);
+        ui::card(ui, |ui| {
+            ui.horizontal(|ui| {
+                let input_width = (ui.available_width() - 96.0).max(120.0);
+                ui.add_sized(
+                    [input_width, 34.0],
+                    TextEdit::singleline(&mut self.path)
+                        .hint_text("输入文件完整路径或直接拖入文件"),
+                );
+                let query = ui
+                    .add_enabled_ui(!self.busy, |ui| ui::primary_button(ui, "查询"))
+                    .inner;
+                if query.clicked() {
+                    actions.extend(self.start_query());
+                }
+            });
         });
 
         if self.busy {
-            ui.add_space(16.0);
-            ui.spinner();
-            ui.label("正在查询文件占用...");
+            ui.add_space(ui::SPACE_16);
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("正在查询文件占用...");
+            });
         }
 
         if let Some(result) = &self.result {
@@ -75,12 +88,16 @@ impl ToolModule for FileLockTool {
                     "Restart Manager 未返回任何占用者。",
                 ),
                 Ok(result) => {
-                    ui.label(RichText::new(&result.path).strong());
-                    ui.add_space(10.0);
-                    ui.label(RichText::new("正在使用").color(Color32::from_rgb(60, 128, 104)));
-                    ui.add_space(6.0);
+                    ui::card(ui, |ui| {
+                        ui.label(RichText::new("查询文件").strong());
+                        ui.add_space(ui::SPACE_4);
+                        ui.monospace(&result.path);
+                    });
+                    ui.add_space(ui::SPACE_12);
+                    ui.label(RichText::new("正在使用").color(ui::success()).strong());
+                    ui.add_space(ui::SPACE_8);
                     for process in &result.processes {
-                        ui.group(|ui| {
+                        ui::card(ui, |ui| {
                             ui.set_min_width(ui.available_width());
                             ui.horizontal(|ui| {
                                 ui.vertical(|ui| {
@@ -93,10 +110,10 @@ impl ToolModule for FileLockTool {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        if ui.button("查看进程").clicked() {
-                                            actions.push(AppAction::InspectProcess {
-                                                pid: process.pid,
-                                            });
+                                        if ui::primary_button(ui, "查看进程").clicked() {
+                                            actions.push(AppAction::InvokeTool(
+                                                ToolInvocation::process(process.pid),
+                                            ));
                                         }
                                         if ui.small_button("复制 PID").clicked() {
                                             actions
@@ -106,7 +123,7 @@ impl ToolModule for FileLockTool {
                                 );
                             });
                         });
-                        ui.add_space(5.0);
+                        ui.add_space(ui::SPACE_8);
                     }
                 }
                 Err(error) => error_state(ui, error),
@@ -166,26 +183,14 @@ impl FileLockTool {
 }
 
 pub(crate) fn heading(ui: &mut egui::Ui, title: &str, subtitle: &str) {
-    ui.heading(title);
-    ui.label(RichText::new(subtitle).color(ui.visuals().weak_text_color()));
+    ui::page_heading(ui, title, subtitle);
 }
 
 pub(crate) fn empty_state(ui: &mut egui::Ui, title: &str, detail: &str) {
-    ui.vertical_centered(|ui| {
-        ui.label(RichText::new(title).strong());
-        ui.add_space(5.0);
-        ui.label(RichText::new(detail).color(ui.visuals().weak_text_color()));
-    });
+    ui::state_card(ui, title, detail, ui::accent(ui));
 }
 
 pub(crate) fn error_state(ui: &mut egui::Ui, error: &AppError) {
     let (title, detail) = error.user_message();
-    ui.group(|ui| {
-        ui.label(
-            RichText::new(title)
-                .color(Color32::from_rgb(190, 66, 66))
-                .strong(),
-        );
-        ui.label(detail);
-    });
+    ui::state_card(ui, title, &detail, ui::danger());
 }

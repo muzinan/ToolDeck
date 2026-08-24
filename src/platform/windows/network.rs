@@ -117,7 +117,7 @@ fn query_udp_v6(
         .collect())
 }
 
-fn read_tcp_rows<T>(address_family: u32) -> Result<Vec<T>, AppError> {
+fn read_tcp_rows<T: Copy>(address_family: u32) -> Result<Vec<T>, AppError> {
     let mut size = 0_u32;
     // Safety: 首轮不提供指针；size 是有效可写地址，API 仅回填所需容量。
     let first = unsafe {
@@ -148,7 +148,7 @@ fn read_tcp_rows<T>(address_family: u32) -> Result<Vec<T>, AppError> {
     })
 }
 
-fn read_udp_rows<T>(address_family: u32) -> Result<Vec<T>, AppError> {
+fn read_udp_rows<T: Copy>(address_family: u32) -> Result<Vec<T>, AppError> {
     let mut size = 0_u32;
     // Safety: 首轮不提供指针；size 是有效可写地址，API 仅回填所需容量。
     let first = unsafe {

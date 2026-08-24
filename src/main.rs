@@ -9,6 +9,7 @@ mod model;
 mod platform;
 mod settings;
 mod tools;
+mod ui;
 
 use app::ToolboxApp;
 use core::invocation::ToolInvocation;
@@ -27,10 +28,12 @@ fn main() -> anyhow::Result<()> {
     let initial_invocation = ToolInvocation::from_command_line()?;
     let instance = SingleInstance::acquire(initial_invocation.clone())?;
 
-    let receiver = match instance {
+    let mut primary_instance = match instance {
         InstanceRole::Secondary => return Ok(()),
-        InstanceRole::Primary(mut primary) => primary.take_receiver(),
+        InstanceRole::Primary(primary) => primary,
     };
+    let receiver = primary_instance.take_receiver();
+    // primary_instance 必须保留在 main 的作用域内，确保互斥体句柄直到 run_native 返回后才关闭。
 
     let settings_store = SettingsStore::open()?;
     let settings = settings_store.load();

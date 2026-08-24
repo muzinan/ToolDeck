@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn quotes_unicode_path_with_spaces() {
         assert_eq!(
-            quote_windows_argument(OsStr::new(r"C:\\Users\\张三\\Desktop\\工具\\Toolbox.exe")),
+            quote_windows_argument(OsStr::new(r"C:\Users\张三\Desktop\工具\Toolbox.exe")),
             r#""C:\Users\张三\Desktop\工具\Toolbox.exe""#
         );
     }
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn doubles_terminal_backslashes_before_quote() {
         assert_eq!(
-            quote_windows_argument(OsStr::new(r"C:\\Toolbox\\")),
+            quote_windows_argument(OsStr::new(r"C:\Toolbox\")),
             r#""C:\Toolbox\\""#
         );
     }

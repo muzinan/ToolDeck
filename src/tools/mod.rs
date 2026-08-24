@@ -10,18 +10,13 @@ use std::time::Instant;
 
 use eframe::egui;
 
-use crate::{
-    core::{actions::AppAction, invocation::ToolPayload, worker::TaskResult},
-    settings::ThemePreference,
-};
+use crate::core::{actions::AppAction, invocation::ToolPayload, worker::TaskResult};
 
-pub use registry::{ToolCategory, ToolDescriptor, ToolRegistry};
+pub use registry::{ToolDescriptor, ToolIcon, ToolRegistry};
 
 /// 工具 UI 所需的外壳只读状态；禁止将应用状态或其他工具实例直接交给页面。
 #[derive(Clone, Copy)]
-pub struct ToolUiContext {
-    pub theme: ThemePreference,
-}
+pub struct ToolUiContext;
 
 /// 编译进主程序的独立工具模块接口。
 pub trait ToolModule: Send {

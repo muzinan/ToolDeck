@@ -25,8 +25,9 @@ use windows::{
 
 use crate::{core::invocation::ToolInvocation, model::AppError, platform::windows::wide};
 
-const MUTEX_NAME: &str = "Local\\WindowsToolbox.V0_1";
-const PIPE_NAME: &str = r"\\.\pipe\WindowsToolbox.V0_1.Invocation";
+// 升级命名版本，避免仍在运行但窗口不可达的旧 V0_1 实例阻断本轮新 EXE 的冷启动。
+const MUTEX_NAME: &str = "Local\\WindowsToolbox.V0_2";
+const PIPE_NAME: &str = r"\\.\pipe\WindowsToolbox.V0_2.Invocation";
 const PIPE_BUFFER_SIZE: u32 = 16_384;
 
 pub enum InstanceRole {
@@ -61,9 +62,9 @@ impl SingleInstance {
 
         // Safety: 读取紧邻 CreateMutexW 的线程局部错误码，不解引用任何原始指针。
         if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-            if let Some(invocation) = invocation {
-                send_to_primary(&invocation)?;
-            }
+            // 无命令行工具调用时也必须唤醒主窗口，避免普通双击被静默当作次实例退出。
+            let invocation = invocation.unwrap_or_else(ToolInvocation::activate);
+            send_to_primary(&invocation)?;
             drop(mutex);
             return Ok(InstanceRole::Secondary);
         }

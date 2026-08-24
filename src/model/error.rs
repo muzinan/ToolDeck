@@ -15,6 +15,8 @@ pub enum AppError {
     ProcessExited(u32),
     #[error("输入无效: {0}")]
     InvalidInput(String),
+    /// 为后续工具和平台能力扩展保留的统一错误类型；当前 V0.1 尚无对应失败路径。
+    #[allow(dead_code)]
     #[error("当前系统不支持此操作: {0}")]
     Unsupported(String),
     #[error("Windows API 调用失败: {context} ({code})")]

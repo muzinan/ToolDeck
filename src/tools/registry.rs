@@ -18,6 +18,14 @@ pub enum ToolCategory {
     Other,
 }
 
+/// 工具在导航与首页中的无文字线性图标类型。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToolIcon {
+    FileLock,
+    Network,
+    Process,
+}
+
 impl ToolCategory {
     pub const ALL: [Self; 7] = [
         Self::File,
@@ -49,7 +57,7 @@ pub struct ToolDescriptor {
     pub name: &'static str,
     pub description: &'static str,
     pub category: ToolCategory,
-    pub icon: &'static str,
+    pub icon: ToolIcon,
     pub keywords: &'static [&'static str],
 }
 
@@ -124,10 +132,12 @@ impl ToolRegistry {
     }
 
     pub fn get_mut(&mut self, id: &str) -> Option<&mut (dyn ToolModule + '_)> {
-        self.tools
-            .iter_mut()
-            .find(|tool| tool.descriptor().id == id)
-            .map(Box::as_mut)
+        for tool in &mut self.tools {
+            if tool.descriptor().id == id {
+                return Some(tool.as_mut());
+            }
+        }
+        None
     }
 
     pub fn get(&self, id: &str) -> Option<&(dyn ToolModule + '_)> {
@@ -155,7 +165,7 @@ mod tests {
         core::{actions::AppAction, invocation::ToolPayload, worker::TaskResult},
         tools::{
             ToolModule, ToolUiContext, build_registry,
-            registry::{ToolCategory, ToolDescriptor, ToolRegistry},
+            registry::{ToolCategory, ToolDescriptor, ToolIcon, ToolRegistry},
         },
     };
 
@@ -168,7 +178,7 @@ mod tests {
                 name: "Stub",
                 description: "Registry test helper",
                 category: ToolCategory::Other,
-                icon: "S",
+                icon: ToolIcon::FileLock,
                 keywords: &["stub"],
             }
         }
@@ -220,5 +230,34 @@ mod tests {
         let mut registry = ToolRegistry::default();
         registry.try_register(Box::new(StubTool)).unwrap();
         assert!(registry.try_register(Box::new(StubTool)).is_err());
+    }
+
+    #[test]
+    fn registry_uses_the_expected_tool_icon_mapping() {
+        let descriptors = build_registry().descriptors();
+        assert_eq!(
+            descriptors
+                .iter()
+                .find(|tool| tool.id == "file-lock")
+                .unwrap()
+                .icon,
+            ToolIcon::FileLock
+        );
+        assert_eq!(
+            descriptors
+                .iter()
+                .find(|tool| tool.id == "port-inspector")
+                .unwrap()
+                .icon,
+            ToolIcon::Network
+        );
+        assert_eq!(
+            descriptors
+                .iter()
+                .find(|tool| tool.id == "process-inspector")
+                .unwrap()
+                .icon,
+            ToolIcon::Process
+        );
     }
 }

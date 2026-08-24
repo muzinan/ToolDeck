@@ -3,7 +3,7 @@
 
 use std::{
     path::PathBuf,
-    sync::mpsc::{Receiver, TryRecvError},
+    sync::mpsc::Receiver,
     time::{Duration, Instant},
 };
 
@@ -15,13 +15,14 @@ use eframe::{
 use crate::{
     core::{
         actions::AppAction,
-        invocation::{ToolInvocation, ToolPayload},
+        invocation::ToolInvocation,
         worker::{TaskDispatcher, TaskRequest, TaskResult},
     },
     model::{AppError, ProcessSummary},
     platform::windows::{open_file_location, shell_context_menu},
     settings::{AppSettings, SettingsStore, ThemePreference},
     tools::{ToolDescriptor, ToolRegistry, ToolUiContext, build_registry},
+    ui,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,8 +64,9 @@ impl ToolboxApp {
         invocation_receiver: Receiver<ToolInvocation>,
         initial_invocation: Option<ToolInvocation>,
     ) -> Self {
+        ui::install_windows_fonts(&creation_context.egui_ctx);
+        ui::configure_styles(&creation_context.egui_ctx);
         apply_theme(&creation_context.egui_ctx, settings.theme);
-        configure_visuals(&creation_context.egui_ctx);
         let (task_dispatcher, task_receiver) = TaskDispatcher::new();
         Self {
             registry: build_registry(),
@@ -82,29 +84,19 @@ impl ToolboxApp {
     }
 
     fn drain_background_messages(&mut self, context: &egui::Context) {
-        loop {
-            match self.task_receiver.try_recv() {
-                Ok(result) => {
-                    let tool_id = result.target_tool_id();
-                    if let Some(tool) = self.registry.get_mut(tool_id) {
-                        tool.handle_task_result(result);
-                    }
-                }
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+        while let Ok(result) = self.task_receiver.try_recv() {
+            let tool_id = result.target_tool_id();
+            if let Some(tool) = self.registry.get_mut(tool_id) {
+                tool.handle_task_result(result);
             }
         }
 
-        loop {
-            match self.invocation_receiver.try_recv() {
-                Ok(invocation) => {
-                    self.pending_invocations.push(invocation);
-                    // 由次实例唤起时恢复并聚焦现有窗口，平台后端会将这些命令映射到原生窗口操作。
-                    context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    context.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                    context.send_viewport_cmd(egui::ViewportCommand::Focus);
-                }
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-            }
+        while let Ok(invocation) = self.invocation_receiver.try_recv() {
+            self.pending_invocations.push(invocation);
+            // 由次实例唤起时恢复并聚焦现有窗口，平台后端会将这些命令映射到原生窗口操作。
+            context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            context.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            context.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
     }
 
@@ -119,23 +111,31 @@ impl ToolboxApp {
 
         egui::SidePanel::left("toolbox-sidebar")
             .resizable(false)
-            .default_width(236.0)
-            .min_width(220.0)
+            .default_width(248.0)
+            .min_width(248.0)
             .show(context, |ui| {
-                ui.add_space(13.0);
+                ui.add_space(ui::SPACE_16);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("WINDOWS TOOLBOX").strong().size(16.0));
+                    ui::tool_icon(ui, crate::tools::ToolIcon::Process, 30.0, ui::accent(ui));
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("Windows Toolbox").strong().size(17.0));
+                        ui.label(
+                            RichText::new("系统诊断工具集")
+                                .size(12.0)
+                                .color(ui.visuals().weak_text_color()),
+                        );
+                    });
                 });
-                ui.add_space(14.0);
+                ui.add_space(ui::SPACE_16);
                 ui.add_sized(
-                    [ui.available_width(), 31.0],
+                    [ui.available_width(), 34.0],
                     egui::TextEdit::singleline(&mut self.search).hint_text("搜索工具"),
                 );
-                ui.add_space(14.0);
+                ui.add_space(ui::SPACE_16);
 
                 if !self.search.trim().is_empty() {
-                    ui.label(RichText::new("搜索结果").color(ui.visuals().weak_text_color()));
-                    ui.add_space(5.0);
+                    nav_section_label(ui, "搜索结果");
+                    ui.add_space(ui::SPACE_4);
                     if descriptors.is_empty() {
                         ui.small("没有匹配的工具");
                     }
@@ -149,18 +149,13 @@ impl ToolboxApp {
                         }
                     }
                 } else {
-                    if ui
-                        .selectable_label(self.page == Page::Home, "常用工具")
-                        .clicked()
-                    {
+                    if nav_text_button(ui, "常用工具", self.page == Page::Home) {
                         actions.push(AppAction::NavigateTo("home".into()));
                     }
-                    ui.add_space(14.0);
+                    ui.add_space(ui::SPACE_16);
                     for category in categories {
-                        ui.label(
-                            RichText::new(category.label()).color(ui.visuals().weak_text_color()),
-                        );
-                        ui.add_space(4.0);
+                        nav_section_label(ui, category.label());
+                        ui.add_space(ui::SPACE_4);
                         for descriptor in self.registry.in_category(category) {
                             if tool_nav_button(
                                 ui,
@@ -170,22 +165,17 @@ impl ToolboxApp {
                                 actions.push(AppAction::NavigateTo(descriptor.id.into()));
                             }
                         }
-                        ui.add_space(10.0);
+                        ui.add_space(ui::SPACE_12);
                     }
                 }
 
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                     ui.separator();
-                    if ui
-                        .selectable_label(self.page == Page::About, "关于")
-                        .clicked()
-                    {
+                    ui.add_space(ui::SPACE_4);
+                    if nav_text_button(ui, "关于", self.page == Page::About) {
                         actions.push(AppAction::NavigateTo("about".into()));
                     }
-                    if ui
-                        .selectable_label(self.page == Page::Settings, "设置")
-                        .clicked()
-                    {
+                    if nav_text_button(ui, "设置", self.page == Page::Settings) {
                         actions.push(AppAction::NavigateTo("settings".into()));
                     }
                 });
@@ -196,22 +186,18 @@ impl ToolboxApp {
     fn render_content(&mut self, context: &egui::Context) -> Vec<AppAction> {
         let page = self.page.clone();
         egui::CentralPanel::default()
+            .frame(
+                egui::Frame::central_panel(context.style().as_ref())
+                    .inner_margin(egui::Margin::same(24)),
+            )
             .show(context, |ui| {
-                ui.add_space(12.0);
                 ui.set_max_width(1120.0);
                 match page {
                     Page::Home => self.render_home(ui),
                     Page::Tool(id) => self
                         .registry
                         .get_mut(&id)
-                        .map(|tool| {
-                            tool.ui(
-                                ui,
-                                ToolUiContext {
-                                    theme: self.settings.theme,
-                                },
-                            )
-                        })
+                        .map(|tool| tool.ui(ui, ToolUiContext))
                         .unwrap_or_else(|| vec![AppAction::NavigateTo("home".into())]),
                     Page::Settings => self.render_settings(ui),
                     Page::About => self.render_about(ui),
@@ -222,33 +208,33 @@ impl ToolboxApp {
 
     fn render_home(&self, ui: &mut egui::Ui) -> Vec<AppAction> {
         let mut actions = Vec::new();
-        ui.heading("常用工具");
-        ui.label(
-            RichText::new("快速进入常用的系统诊断工具。").color(ui.visuals().weak_text_color()),
-        );
-        ui.add_space(18.0);
+        ui::page_heading(ui, "常用工具", "快速进入常用的系统诊断工具。");
+        ui.add_space(ui::SPACE_24);
         let descriptors = self.registry.descriptors();
-        egui::Grid::new("home-tools")
-            .num_columns(2)
-            .spacing([12.0, 12.0])
-            .show(ui, |ui| {
+        if ui.available_width() >= 820.0 {
+            ui.columns(2, |columns| {
                 for (index, descriptor) in descriptors.iter().enumerate() {
-                    if home_tool_card(ui, descriptor) {
+                    if home_tool_card(&mut columns[index % 2], descriptor) {
                         actions.push(AppAction::NavigateTo(descriptor.id.into()));
-                    }
-                    if index % 2 == 1 {
-                        ui.end_row();
                     }
                 }
             });
-        ui.add_space(30.0);
+        } else {
+            for descriptor in &descriptors {
+                if home_tool_card(ui, descriptor) {
+                    actions.push(AppAction::NavigateTo(descriptor.id.into()));
+                }
+                ui.add_space(ui::SPACE_12);
+            }
+        }
+        ui.add_space(32.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("最近使用").strong());
             if !self.settings.recent_tools.is_empty() && ui.small_button("清除").clicked() {
                 actions.push(AppAction::ClearRecents);
             }
         });
-        ui.add_space(6.0);
+        ui.add_space(ui::SPACE_8);
         if self.settings.recent_tools.is_empty() {
             ui.label(
                 RichText::new("最近打开的工具会显示在这里。").color(ui.visuals().weak_text_color()),
@@ -256,10 +242,9 @@ impl ToolboxApp {
         } else {
             for id in &self.settings.recent_tools {
                 if let Some(descriptor) = descriptors.iter().find(|descriptor| descriptor.id == id)
+                    && ui.link(descriptor.name).clicked()
                 {
-                    if ui.link(descriptor.name).clicked() {
-                        actions.push(AppAction::NavigateTo(descriptor.id.into()));
-                    }
+                    actions.push(AppAction::NavigateTo(descriptor.id.into()));
                 }
             }
         }
@@ -268,79 +253,86 @@ impl ToolboxApp {
 
     fn render_settings(&mut self, ui: &mut egui::Ui) -> Vec<AppAction> {
         let mut actions = Vec::new();
-        ui.heading("设置");
-        ui.label(
-            RichText::new("设置仅保存在当前 Windows 用户的本地配置目录。")
-                .color(ui.visuals().weak_text_color()),
-        );
-        ui.add_space(20.0);
-        ui.label(RichText::new("外观").strong());
-        let before_theme = self.settings.theme;
-        egui::ComboBox::from_id_salt("theme-preference")
-            .selected_text(self.settings.theme.label())
-            .show_ui(ui, |ui| {
-                ui.selectable_value(
-                    &mut self.settings.theme,
-                    ThemePreference::System,
-                    "跟随系统",
-                );
-                ui.selectable_value(&mut self.settings.theme, ThemePreference::Light, "浅色");
-                ui.selectable_value(&mut self.settings.theme, ThemePreference::Dark, "深色");
-            });
-        if before_theme != self.settings.theme {
-            apply_theme(ui.ctx(), self.settings.theme);
-            self.persist_settings();
-        }
-        ui.add_space(22.0);
-        ui.label(RichText::new("资源管理器右键菜单").strong());
-        ui.label(
-            RichText::new("在文件右键菜单中提供“Windows Toolbox -> 查看文件占用”。")
-                .color(ui.visuals().weak_text_color()),
-        );
-        let registered = shell_context_menu::is_context_menu_registered();
-        ui.horizontal(|ui| {
-            let mut enabled = registered;
-            if ui
-                .checkbox(&mut enabled, "启用 Windows Toolbox 右键菜单")
-                .changed()
-            {
-                actions.push(AppAction::ToggleContextMenu { enabled });
+        ui::page_heading(ui, "设置", "设置仅保存在当前 Windows 用户的本地配置目录。");
+        ui.add_space(ui::SPACE_24);
+        ui::card(ui, |ui| {
+            ui.label(RichText::new("外观").strong());
+            ui.add_space(ui::SPACE_8);
+            let before_theme = self.settings.theme;
+            egui::ComboBox::from_id_salt("theme-preference")
+                .selected_text(self.settings.theme.label())
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.settings.theme,
+                        ThemePreference::System,
+                        "跟随系统",
+                    );
+                    ui.selectable_value(&mut self.settings.theme, ThemePreference::Light, "浅色");
+                    ui.selectable_value(&mut self.settings.theme, ThemePreference::Dark, "深色");
+                });
+            if before_theme != self.settings.theme {
+                apply_theme(ui.ctx(), self.settings.theme);
+                self.persist_settings();
             }
-            ui.label(if registered {
-                "状态：已注册"
-            } else {
-                "状态：未注册"
-            });
         });
-        ui.horizontal(|ui| {
-            if ui.button("重新注册").clicked() {
-                actions.push(AppAction::ToggleContextMenu { enabled: true });
-            }
-            if ui
-                .add_enabled(registered, egui::Button::new("移除"))
-                .clicked()
-            {
-                actions.push(AppAction::ToggleContextMenu { enabled: false });
-            }
+        ui.add_space(ui::SPACE_16);
+        ui::card(ui, |ui| {
+            ui.label(RichText::new("资源管理器右键菜单").strong());
+            ui.label(
+                RichText::new("在文件右键菜单中提供“Windows Toolbox -> 查看文件占用”。")
+                    .color(ui.visuals().weak_text_color()),
+            );
+            let registered = shell_context_menu::is_context_menu_registered();
+            ui.horizontal(|ui| {
+                let mut enabled = registered;
+                if ui
+                    .checkbox(&mut enabled, "启用 Windows Toolbox 右键菜单")
+                    .changed()
+                {
+                    actions.push(AppAction::ToggleContextMenu { enabled });
+                }
+                ui.label(if registered {
+                    "状态：已注册"
+                } else {
+                    "状态：未注册"
+                });
+            });
+            ui.horizontal(|ui| {
+                if ui::primary_button(ui, "重新注册").clicked() {
+                    actions.push(AppAction::ToggleContextMenu { enabled: true });
+                }
+                if ui
+                    .add_enabled(registered, egui::Button::new("移除"))
+                    .clicked()
+                {
+                    actions.push(AppAction::ToggleContextMenu { enabled: false });
+                }
+            });
         });
         actions
     }
 
     fn render_about(&self, ui: &mut egui::Ui) -> Vec<AppAction> {
-        ui.heading("关于 Windows Toolbox");
-        ui.label(RichText::new("V0.1.0").color(ui.visuals().weak_text_color()));
-        ui.add_space(18.0);
-        ui.label("Windows Toolbox 是面向 Windows 用户和开发者的原生系统工具集合。");
-        ui.add_space(12.0);
-        ui.label("当前内建工具：");
-        ui.label("• 文件占用：通过 Restart Manager 查看锁定文件的进程");
-        ui.label("• 端口占用：通过 IP Helper 查看 TCP / UDP 端点");
-        ui.label("• 进程关系：通过 Toolhelp 查看父进程链与基础详情");
-        ui.add_space(18.0);
-        ui.label(
-            RichText::new("默认普通用户权限运行；受限进程的路径或操作可能需要管理员权限。")
-                .color(ui.visuals().weak_text_color()),
+        ui::page_heading(
+            ui,
+            "关于 Windows Toolbox",
+            "V0.1.0 · Windows 原生系统诊断工具集",
         );
+        ui.add_space(ui::SPACE_24);
+        ui::card(ui, |ui| {
+            ui.label("Windows Toolbox 面向 Windows 用户和开发者，提供常用系统状态诊断能力。");
+            ui.add_space(ui::SPACE_12);
+            ui.label(RichText::new("当前内建工具").strong());
+            ui.add_space(ui::SPACE_8);
+            ui.label("文件占用 · 通过 Restart Manager 查看锁定文件的进程");
+            ui.label("端口占用 · 通过 IP Helper 查看 TCP / UDP 端点");
+            ui.label("进程关系 · 通过 Toolhelp 查看父进程链与基础详情");
+            ui.add_space(ui::SPACE_16);
+            ui.label(
+                RichText::new("默认以普通用户权限运行；受限进程的路径或操作可能需要管理员权限。")
+                    .color(ui.visuals().weak_text_color()),
+            );
+        });
         Vec::new()
     }
 
@@ -354,10 +346,7 @@ impl ToolboxApp {
                 AppAction::InspectProcess { pid } => self.dispatch_process(pid),
                 AppAction::CopyText(text) => context.copy_text(text),
                 AppAction::OpenFileLocation(path) => match open_file_location(&path) {
-                    Ok(()) => self.set_notice(
-                        "已在资源管理器中打开文件位置",
-                        Color32::from_rgb(62, 135, 106),
-                    ),
+                    Ok(()) => self.set_notice("已在资源管理器中打开文件位置", ui::success()),
                     Err(error) => self.set_error_notice(error),
                 },
                 AppAction::RequestTerminateProcess(process) => {
@@ -387,9 +376,13 @@ impl ToolboxApp {
     }
 
     fn apply_invocation(&mut self, context: &egui::Context, invocation: ToolInvocation) {
+        // activate 已在接收队列阶段触发 Visible/Minimized/Focus，仅用于恢复窗口，不改变页面状态。
+        if invocation.is_activate() {
+            return;
+        }
         let tool_id = invocation.tool_id.clone();
         if self.registry.get(&tool_id).is_none() {
-            self.set_notice("收到未知工具调用", Color32::from_rgb(185, 70, 70));
+            self.set_notice("收到未知工具调用", ui::danger());
             return;
         }
         self.navigate_to(&tool_id);
@@ -451,7 +444,7 @@ impl ToolboxApp {
                     } else {
                         "资源管理器右键菜单已移除"
                     },
-                    Color32::from_rgb(62, 135, 106),
+                    ui::success(),
                 );
             }
             Err(error) => self.set_error_notice(error),
@@ -464,6 +457,7 @@ impl ToolboxApp {
         };
         let mut open = true;
         let mut confirm = false;
+        let mut cancel = false;
         egui::Window::new("确认结束进程")
             .collapsible(false)
             .resizable(false)
@@ -473,19 +467,13 @@ impl ToolboxApp {
                 ui.add_space(8.0);
                 ui.label(format!("{}  (PID {})", process.name, process.pid));
                 ui.add_space(8.0);
-                ui.label(
-                    RichText::new("这可能导致未保存的数据丢失。")
-                        .color(Color32::from_rgb(184, 62, 62)),
-                );
+                ui.label(RichText::new("这可能导致未保存的数据丢失。").color(ui::danger()));
                 ui.add_space(14.0);
                 ui.horizontal(|ui| {
                     if ui.button("取消").clicked() {
-                        open = false;
+                        cancel = true;
                     }
-                    if ui
-                        .button(RichText::new("结束进程").color(Color32::from_rgb(184, 62, 62)))
-                        .clicked()
-                    {
+                    if ui::danger_button(ui, "结束进程").clicked() {
                         confirm = true;
                     }
                 });
@@ -494,7 +482,7 @@ impl ToolboxApp {
             self.pending_termination = None;
             return vec![AppAction::TerminateProcess { pid: process.pid }];
         }
-        if !open {
+        if cancel || !open {
             self.pending_termination = None;
         }
         Vec::new()
@@ -536,7 +524,7 @@ impl ToolboxApp {
 
     fn set_error_notice(&mut self, error: AppError) {
         let (title, detail) = error.user_message();
-        self.set_notice(format!("{title}：{detail}"), Color32::from_rgb(184, 62, 62));
+        self.set_notice(format!("{title}：{detail}"), ui::danger());
     }
 
     fn render_notice(&mut self, context: &egui::Context) {
@@ -550,7 +538,7 @@ impl ToolboxApp {
         egui::Area::new("toolbox-notice".into())
             .anchor(egui::Align2::RIGHT_BOTTOM, [-18.0, -18.0])
             .show(context, |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui::compact_card(ui, |ui| {
                     ui.label(RichText::new(&notice.message).color(notice.color));
                 });
             });
@@ -596,27 +584,187 @@ pub fn native_options(settings: &AppSettings, persistence_path: PathBuf) -> efra
     }
 }
 
+fn nav_section_label(ui: &mut egui::Ui, label: &str) {
+    ui.label(
+        RichText::new(label)
+            .size(12.0)
+            .color(ui.visuals().weak_text_color()),
+    );
+}
+
+fn nav_text_button(ui: &mut egui::Ui, label: &str, selected: bool) -> bool {
+    let available = ui.available_width();
+    let (response, painter) =
+        ui.allocate_painter(egui::vec2(available, 34.0), egui::Sense::click());
+    let fill = if selected {
+        ui::accent(ui).gamma_multiply(0.18)
+    } else if response.hovered() {
+        ui.visuals().widgets.hovered.bg_fill
+    } else {
+        Color32::TRANSPARENT
+    };
+    painter.rect_filled(response.rect, egui::CornerRadius::same(6), fill);
+    if response.has_focus() {
+        painter.rect_stroke(
+            response.rect.shrink(1.0),
+            egui::CornerRadius::same(6),
+            egui::Stroke::new(2.0_f32, ui::accent(ui)),
+            egui::StrokeKind::Middle,
+        );
+    }
+    if selected {
+        painter.rect_filled(
+            egui::Rect::from_min_size(
+                response.rect.left_top(),
+                egui::vec2(3.0, response.rect.height()),
+            ),
+            egui::CornerRadius::same(2),
+            ui::accent(ui),
+        );
+    }
+    painter.text(
+        response.rect.left_center() + egui::vec2(12.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(14.0),
+        ui.visuals().text_color(),
+    );
+    if response.clicked() {
+        response.request_focus();
+    }
+    response.clicked()
+        || (response.has_focus()
+            && ui.input(|input| {
+                input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
+            }))
+}
+
 fn tool_nav_button(ui: &mut egui::Ui, descriptor: &ToolDescriptor, selected: bool) -> bool {
-    ui.selectable_label(
-        selected,
-        format!("{}  {}", descriptor.icon, descriptor.name),
-    )
-    .clicked()
+    let available = ui.available_width();
+    let (response, painter) =
+        ui.allocate_painter(egui::vec2(available, 38.0), egui::Sense::click());
+    let fill = if selected {
+        ui::accent(ui).gamma_multiply(0.18)
+    } else if response.hovered() {
+        ui.visuals().widgets.hovered.bg_fill
+    } else {
+        Color32::TRANSPARENT
+    };
+    painter.rect_filled(response.rect, egui::CornerRadius::same(6), fill);
+    if response.has_focus() {
+        painter.rect_stroke(
+            response.rect.shrink(1.0),
+            egui::CornerRadius::same(6),
+            egui::Stroke::new(2.0_f32, ui::accent(ui)),
+            egui::StrokeKind::Middle,
+        );
+    }
+    if selected {
+        painter.rect_filled(
+            egui::Rect::from_min_size(
+                response.rect.left_top(),
+                egui::vec2(3.0, response.rect.height()),
+            ),
+            egui::CornerRadius::same(2),
+            ui::accent(ui),
+        );
+    }
+    let icon_rect = egui::Rect::from_min_size(
+        response.rect.left_top() + egui::vec2(10.0, 7.0),
+        egui::vec2(24.0, 24.0),
+    );
+    ui::paint_tool_icon(
+        &painter,
+        icon_rect,
+        descriptor.icon,
+        if selected {
+            ui::accent(ui)
+        } else {
+            ui.visuals().weak_text_color()
+        },
+    );
+    painter.text(
+        response.rect.left_center() + egui::vec2(44.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        descriptor.name,
+        egui::FontId::proportional(14.0),
+        ui.visuals().text_color(),
+    );
+    if response.clicked() {
+        response.request_focus();
+    }
+    response.clicked()
+        || (response.has_focus()
+            && ui.input(|input| {
+                input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
+            }))
 }
 
 fn home_tool_card(ui: &mut egui::Ui, descriptor: &ToolDescriptor) -> bool {
-    ui.add_sized(
-        [ui.available_width().min(350.0), 80.0],
-        egui::Button::new(
-            RichText::new(format!(
-                "{}  {}\n{}",
-                descriptor.icon, descriptor.name, descriptor.description
-            ))
-            .size(15.0),
-        )
-        .wrap(),
-    )
-    .clicked()
+    let width = ui.available_width().min(520.0);
+    let (response, painter) = ui.allocate_painter(egui::vec2(width, 112.0), egui::Sense::click());
+    let painter = painter.with_clip_rect(response.rect);
+    let fill = if response.hovered() {
+        ui.visuals().widgets.hovered.bg_fill
+    } else {
+        ui.visuals().window_fill
+    };
+    let stroke = if response.hovered() {
+        egui::Stroke::new(1.0_f32, ui::accent(ui))
+    } else {
+        ui.visuals().widgets.inactive.bg_stroke
+    };
+    painter.rect(
+        response.rect,
+        egui::CornerRadius::same(8),
+        fill,
+        stroke,
+        egui::StrokeKind::Middle,
+    );
+    if response.has_focus() {
+        painter.rect_stroke(
+            response.rect.shrink(1.0),
+            egui::CornerRadius::same(8),
+            egui::Stroke::new(2.0_f32, ui::accent(ui)),
+            egui::StrokeKind::Middle,
+        );
+    }
+    let content = response.rect.shrink(16.0);
+    ui::paint_tool_icon(
+        &painter,
+        egui::Rect::from_min_size(content.left_top(), egui::vec2(34.0, 34.0)),
+        descriptor.icon,
+        ui::accent(ui),
+    );
+    painter.text(
+        content.left_top() + egui::vec2(46.0, 3.0),
+        egui::Align2::LEFT_TOP,
+        descriptor.name,
+        egui::FontId::proportional(16.0),
+        ui.visuals().text_color(),
+    );
+    painter.text(
+        content.left_top() + egui::vec2(46.0, 31.0),
+        egui::Align2::LEFT_TOP,
+        descriptor.description,
+        egui::FontId::proportional(14.0),
+        ui.visuals().weak_text_color(),
+    );
+    painter.text(
+        content.right_bottom(),
+        egui::Align2::RIGHT_BOTTOM,
+        "打开 →",
+        egui::FontId::proportional(12.0),
+        ui::accent(ui),
+    );
+    if response.clicked() {
+        response.request_focus();
+    }
+    response.clicked()
+        || (response.has_focus()
+            && ui.input(|input| {
+                input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
+            }))
 }
 
 fn apply_theme(context: &egui::Context, preference: ThemePreference) {
@@ -626,12 +774,4 @@ fn apply_theme(context: &egui::Context, preference: ThemePreference) {
         ThemePreference::Dark => egui::ThemePreference::Dark,
     };
     context.set_theme(preference);
-}
-
-fn configure_visuals(context: &egui::Context) {
-    context.style_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-        style.spacing.button_padding = egui::vec2(10.0, 6.0);
-        style.spacing.window_margin = egui::Margin::same(14);
-    });
 }
