@@ -2,7 +2,7 @@
 //! 该模块拥有导航、主题、设置、后台任务协作与 Tool Invocation 路由；工具业务保留在独立模块中。
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::mpsc::Receiver,
     time::{Duration, Instant},
@@ -17,10 +17,12 @@ use crate::{
     core::{
         actions::AppAction,
         invocation::ToolInvocation,
-        worker::{TaskDispatcher, TaskRequest, TaskResult},
+        worker::{RequestId, TaskDispatcher, TaskEvent, TaskEventEnvelope, TaskRequest},
     },
     model::{AppError, ProcessSummary},
-    platform::windows::{open_file_location, shell_context_menu},
+    platform::windows::{
+        open_directory, open_file_location, pick_file, save_csv, shell_context_menu,
+    },
     settings::{AppSettings, SettingsStore, ThemePreference},
     tools::{ToolDescriptor, ToolRegistry, ToolUiContext, build_registry},
     ui,
@@ -57,7 +59,8 @@ pub struct ToolboxApp {
     settings_store: SettingsStore,
     settings: AppSettings,
     task_dispatcher: TaskDispatcher,
-    task_receiver: Receiver<TaskResult>,
+    task_receiver: Receiver<TaskEventEnvelope>,
+    latest_requests: HashMap<&'static str, RequestId>,
     invocation_receiver: Receiver<ToolInvocation>,
     pending_invocations: Vec<ToolInvocation>,
     pending_termination: Option<ProcessSummary>,
@@ -69,9 +72,10 @@ impl ToolboxApp {
         creation_context: &eframe::CreationContext<'_>,
         settings_store: SettingsStore,
         settings: AppSettings,
+        settings_warning: Option<String>,
         invocation_receiver: Receiver<ToolInvocation>,
         initial_invocation: Option<ToolInvocation>,
-    ) -> Self {
+    ) -> Result<Self, AppError> {
         let mut settings = settings;
         let registry = build_registry();
         let favorites_before = settings.favorite_tools.clone();
@@ -82,8 +86,8 @@ impl ToolboxApp {
         ui::install_windows_fonts(&creation_context.egui_ctx);
         ui::configure_styles(&creation_context.egui_ctx);
         apply_theme(&creation_context.egui_ctx, settings.theme);
-        let (task_dispatcher, task_receiver) = TaskDispatcher::new();
-        Self {
+        let (task_dispatcher, task_receiver) = TaskDispatcher::new()?;
+        Ok(Self {
             registry,
             page: Page::Home,
             search: String::new(),
@@ -91,18 +95,47 @@ impl ToolboxApp {
             settings,
             task_dispatcher,
             task_receiver,
+            latest_requests: HashMap::new(),
             invocation_receiver,
             pending_invocations: initial_invocation.into_iter().collect(),
             pending_termination: None,
-            notice: None,
-        }
+            notice: settings_warning.map(|message| Notice {
+                message,
+                tone: NoticeTone::Danger,
+                expires_at: Instant::now() + Duration::from_secs(10),
+            }),
+        })
     }
 
     fn drain_background_messages(&mut self, context: &egui::Context) {
-        while let Ok(result) = self.task_receiver.try_recv() {
-            let tool_id = result.target_tool_id();
-            if let Some(tool) = self.registry.get_mut(tool_id) {
-                tool.handle_task_result(result);
+        while let Ok(envelope) = self.task_receiver.try_recv() {
+            let is_finished = matches!(&envelope.event, TaskEvent::Finished(_));
+            if !accept_task_event(
+                &mut self.latest_requests,
+                envelope.target_tool_id,
+                envelope.request_id,
+                is_finished,
+            ) {
+                continue;
+            }
+            match envelope.event {
+                TaskEvent::Progress {
+                    message,
+                    completed,
+                    total,
+                } => {
+                    if let Some(tool) = self.registry.get_mut(envelope.target_tool_id) {
+                        tool.handle_task_progress(message, completed, total);
+                    }
+                }
+                TaskEvent::Finished(result) => {
+                    if let Some(error) = result.error() {
+                        log_runtime_error(error);
+                    }
+                    if let Some(tool) = self.registry.get_mut(envelope.target_tool_id) {
+                        tool.handle_task_result(result);
+                    }
+                }
             }
         }
 
@@ -382,6 +415,22 @@ impl ToolboxApp {
                 }
             });
         });
+        ui.add_space(ui::SPACE_16);
+        ui::card(ui, |ui| {
+            ui.label(RichText::new("诊断").strong());
+            ui.label(
+                RichText::new("启动失败日志保存在本地配置目录，最多保留三份。")
+                    .color(ui.visuals().weak_text_color()),
+            );
+            let directory = crate::diagnostics::diagnostic_directory();
+            if ui
+                .add_enabled(directory.is_some(), egui::Button::new("打开诊断目录"))
+                .clicked()
+                && let Some(directory) = directory
+            {
+                actions.push(AppAction::OpenDirectory(directory));
+            }
+        });
         actions
     }
 
@@ -389,7 +438,7 @@ impl ToolboxApp {
         ui::page_heading(
             ui,
             "关于 Windows Toolbox",
-            "V0.1.1 · Windows 原生系统诊断工具集",
+            "V0.2.0 · Windows 原生系统诊断工具集",
         );
         ui.add_space(ui::SPACE_24);
         ui::card(ui, |ui| {
@@ -399,7 +448,10 @@ impl ToolboxApp {
             ui.add_space(ui::SPACE_8);
             ui.label("文件占用 · 通过 Restart Manager 查看锁定文件的进程");
             ui.label("端口占用 · 通过 IP Helper 查看 TCP / UDP 端点");
-            ui.label("进程关系 · 通过 Toolhelp 查看父进程链与基础详情");
+            ui.label("进程关系 · 通过 Toolhelp 查看父进程链、直接子进程与基础详情");
+            ui.label("DNS 查询 · 系统 DNS 记录解析");
+            ui.label("Ping · 主机响应与延迟测试");
+            ui.label("TCP 端口测试 · TCP 握手与地址族诊断");
             ui.add_space(ui::SPACE_16);
             ui.label(
                 RichText::new("默认以普通用户权限运行；受限进程的路径或操作可能需要管理员权限。")
@@ -414,12 +466,62 @@ impl ToolboxApp {
             match action {
                 AppAction::NavigateTo(target) => self.navigate_to(&target),
                 AppAction::InvokeTool(invocation) => self.apply_invocation(context, invocation),
+                AppAction::PickFileForLocks => match pick_file() {
+                    Ok(Some(path)) => {
+                        self.apply_invocation(context, ToolInvocation::file_lock(path))
+                    }
+                    Ok(None) => {}
+                    Err(error) => self.set_error_notice(error),
+                },
+                AppAction::ExportPortsCsv { content } => match save_csv(&content) {
+                    Ok(Some(path)) => self.set_notice(
+                        format!("CSV 已导出到 {}", path.display()),
+                        NoticeTone::Success,
+                    ),
+                    Ok(None) => {}
+                    Err(error) => self.set_error_notice(error),
+                },
+                AppAction::RunDns {
+                    host,
+                    record_type,
+                    bypass_cache,
+                } => self.dispatch_task(TaskRequest::DnsLookup {
+                    host,
+                    record_type,
+                    bypass_cache,
+                }),
+                AppAction::RunPing {
+                    host,
+                    count,
+                    timeout_ms,
+                    payload_size,
+                    family,
+                } => self.dispatch_task(TaskRequest::Ping {
+                    host,
+                    count,
+                    timeout_ms,
+                    payload_size,
+                    family,
+                }),
+                AppAction::RunTcpProbe {
+                    host,
+                    port,
+                    timeout_ms,
+                } => self.dispatch_task(TaskRequest::TcpProbe {
+                    host,
+                    port,
+                    timeout_ms,
+                }),
                 AppAction::QueryFileLocks { path } => self.dispatch_file_locks(path),
                 AppAction::RefreshPorts => self.dispatch_ports(),
                 AppAction::InspectProcess { pid } => self.dispatch_process(pid),
                 AppAction::CopyText(text) => context.copy_text(text),
                 AppAction::OpenFileLocation(path) => match open_file_location(&path) {
                     Ok(()) => self.set_notice("已在资源管理器中打开文件位置", NoticeTone::Success),
+                    Err(error) => self.set_error_notice(error),
+                },
+                AppAction::OpenDirectory(path) => match open_directory(&path) {
+                    Ok(()) => self.set_notice("已打开诊断目录", NoticeTone::Success),
                     Err(error) => self.set_error_notice(error),
                 },
                 AppAction::RequestTerminateProcess(process) => {
@@ -469,35 +571,16 @@ impl ToolboxApp {
     }
 
     fn dispatch_file_locks(&mut self, path: PathBuf) {
-        if let Some(tool) = self.registry.get_mut("file-lock") {
-            if tool.is_busy() {
-                return;
-            }
-            tool.set_busy(true);
-            self.task_dispatcher
-                .dispatch(TaskRequest::FileLocks { path });
-        }
+        self.dispatch_task(TaskRequest::FileLocks { path });
     }
 
     fn dispatch_ports(&mut self) {
-        if let Some(tool) = self.registry.get_mut("port-inspector") {
-            if tool.is_busy() {
-                return;
-            }
-            tool.set_busy(true);
-            self.task_dispatcher.dispatch(TaskRequest::Ports);
-        }
+        self.dispatch_task(TaskRequest::Ports);
     }
 
     fn dispatch_process(&mut self, pid: u32) {
         self.navigate_to("process-inspector");
-        if let Some(tool) = self.registry.get_mut("process-inspector") {
-            if tool.is_busy() {
-                return;
-            }
-            tool.set_busy(true);
-            self.task_dispatcher.dispatch(TaskRequest::Process { pid });
-        }
+        self.dispatch_task(TaskRequest::Process { pid });
     }
 
     fn toggle_context_menu(&mut self, enabled: bool) {
@@ -563,13 +646,25 @@ impl ToolboxApp {
     }
 
     fn dispatch_termination(&mut self, pid: u32) {
-        if let Some(tool) = self.registry.get_mut("process-inspector") {
-            if tool.is_busy() {
-                return;
+        self.dispatch_task(TaskRequest::TerminateProcess { pid });
+    }
+
+    fn dispatch_task(&mut self, request: TaskRequest) {
+        let tool_id = request.target_tool_id();
+        match self.task_dispatcher.dispatch(request) {
+            Ok(request_id) => {
+                self.latest_requests.insert(tool_id, request_id);
+                if let Some(tool) = self.registry.get_mut(tool_id) {
+                    tool.set_busy(true);
+                }
             }
-            tool.set_busy(true);
-            self.task_dispatcher
-                .dispatch(TaskRequest::TerminateProcess { pid });
+            Err(error) => {
+                let still_pending = self.latest_requests.contains_key(tool_id);
+                if let Some(tool) = self.registry.get_mut(tool_id) {
+                    tool.set_busy(still_pending);
+                }
+                self.set_error_notice(error);
+            }
         }
     }
 
@@ -610,6 +705,7 @@ impl ToolboxApp {
     }
 
     fn set_error_notice(&mut self, error: AppError) {
+        log_runtime_error(&error);
         let (title, detail) = error.user_message();
         self.set_notice(format!("{title}：{detail}"), NoticeTone::Danger);
     }
@@ -634,6 +730,26 @@ impl ToolboxApp {
                 });
             });
     }
+}
+
+fn log_runtime_error(error: &AppError) {
+    tracing::error!(error_kind = error.diagnostic_label(), "运行操作失败");
+}
+
+/// 仅接受同工具最新请求的事件；旧终态既不路由，也不能清除新请求的忙碌状态依据。
+fn accept_task_event(
+    latest_requests: &mut HashMap<&'static str, RequestId>,
+    tool_id: &'static str,
+    request_id: RequestId,
+    is_finished: bool,
+) -> bool {
+    if latest_requests.get(tool_id).copied() != Some(request_id) {
+        return false;
+    }
+    if is_finished {
+        latest_requests.remove(tool_id);
+    }
+    true
 }
 
 impl eframe::App for ToolboxApp {
@@ -922,7 +1038,9 @@ fn apply_theme(context: &egui::Context, preference: ThemePreference) {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_favorite_tools;
+    use std::collections::HashMap;
+
+    use super::{accept_task_event, normalize_favorite_tools};
     use crate::tools::build_registry;
 
     #[test]
@@ -938,5 +1056,14 @@ mod tests {
         normalize_favorite_tools(&descriptors, &mut favorites);
 
         assert_eq!(favorites, ["file-lock", "process-inspector"]);
+    }
+
+    #[test]
+    fn stale_finished_event_does_not_clear_or_route_latest_request() {
+        let mut latest = HashMap::from([("port-inspector", 2)]);
+        assert!(!accept_task_event(&mut latest, "port-inspector", 1, true));
+        assert_eq!(latest.get("port-inspector"), Some(&2));
+        assert!(accept_task_event(&mut latest, "port-inspector", 2, true));
+        assert!(!latest.contains_key("port-inspector"));
     }
 }

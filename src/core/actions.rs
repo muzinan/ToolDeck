@@ -9,14 +9,46 @@ use crate::{core::invocation::ToolInvocation, model::ProcessSummary};
 pub enum AppAction {
     NavigateTo(String),
     InvokeTool(ToolInvocation),
-    QueryFileLocks { path: PathBuf },
+    PickFileForLocks,
+    ExportPortsCsv {
+        content: String,
+    },
+    RunDns {
+        host: String,
+        record_type: crate::model::DnsRecordType,
+        bypass_cache: bool,
+    },
+    RunPing {
+        host: String,
+        count: u32,
+        timeout_ms: u32,
+        payload_size: u16,
+        family: crate::model::PingAddressFamily,
+    },
+    RunTcpProbe {
+        host: String,
+        port: u16,
+        timeout_ms: u32,
+    },
+    QueryFileLocks {
+        path: PathBuf,
+    },
     RefreshPorts,
-    InspectProcess { pid: u32 },
+    InspectProcess {
+        pid: u32,
+    },
     CopyText(String),
     OpenFileLocation(PathBuf),
+    OpenDirectory(PathBuf),
     RequestTerminateProcess(ProcessSummary),
-    TerminateProcess { pid: u32 },
-    ToggleContextMenu { enabled: bool },
-    ToggleFavorite { tool_id: String },
+    TerminateProcess {
+        pid: u32,
+    },
+    ToggleContextMenu {
+        enabled: bool,
+    },
+    ToggleFavorite {
+        tool_id: String,
+    },
     ClearRecents,
 }

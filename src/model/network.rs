@@ -53,6 +53,22 @@ pub enum TcpState {
 }
 
 impl TcpState {
+    pub const ALL: [Self; 13] = [
+        Self::Listen,
+        Self::Established,
+        Self::SynSent,
+        Self::SynReceived,
+        Self::FinWait1,
+        Self::FinWait2,
+        Self::CloseWait,
+        Self::Closing,
+        Self::LastAck,
+        Self::TimeWait,
+        Self::Closed,
+        Self::DeleteTcb,
+        Self::Unknown,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Listen => "LISTENING",
@@ -97,13 +113,42 @@ pub struct NetworkEndpoint {
 
 impl NetworkEndpoint {
     pub fn local_display(&self) -> String {
-        format!("{}:{}", self.local_address, self.local_port)
+        format_endpoint(self.ip_version, &self.local_address, self.local_port)
     }
 
     pub fn remote_display(&self) -> String {
         match self.remote_port {
-            Some(port) => format!("{}:{port}", self.remote_address),
+            Some(port) => format_endpoint(self.ip_version, &self.remote_address, port),
             None => "-".to_owned(),
         }
+    }
+}
+
+fn format_endpoint(version: IpVersion, address: &str, port: u16) -> String {
+    match version {
+        IpVersion::V4 => format!("{address}:{port}"),
+        IpVersion::V6 => format!("[{address}]:{port}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{IpVersion, NetworkEndpoint, NetworkProtocol};
+
+    #[test]
+    fn ipv6_endpoint_uses_brackets_around_address() {
+        let endpoint = NetworkEndpoint {
+            protocol: NetworkProtocol::Tcp,
+            ip_version: IpVersion::V6,
+            local_address: "::1".into(),
+            local_port: 443,
+            remote_address: "2001:db8::1".into(),
+            remote_port: Some(50_000),
+            state: None,
+            pid: 1,
+            process_name: String::new(),
+        };
+        assert_eq!(endpoint.local_display(), "[::1]:443");
+        assert_eq!(endpoint.remote_display(), "[2001:db8::1]:50000");
     }
 }

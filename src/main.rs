@@ -5,6 +5,7 @@
 
 mod app;
 mod core;
+mod diagnostics;
 mod model;
 mod platform;
 mod settings;
@@ -15,12 +16,7 @@ use app::ToolboxApp;
 use core::invocation::ToolInvocation;
 use platform::windows::single_instance::{InstanceRole, SingleInstance};
 use settings::SettingsStore;
-use std::{
-    fs, panic,
-    path::PathBuf,
-    process::ExitCode,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{panic, process::ExitCode};
 use windows::{
     Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW},
     core::PCWSTR,
@@ -30,23 +26,42 @@ const APP_NAME: &str = "Windows Toolbox";
 
 fn main() -> ExitCode {
     panic::set_hook(Box::new(|info| {
-        report_startup_failure(&format!("程序发生未处理异常：{info}"))
+        report_startup_failure(
+            &format!("程序发生未处理异常：{info}"),
+            diagnostics::StartupFailureKind::Panic,
+        )
     }));
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            report_startup_failure(&format!("Windows Toolbox 无法启动：{error}"));
+            report_startup_failure(
+                &format!("Windows Toolbox 无法启动：{error}"),
+                diagnostics::StartupFailureKind::Startup,
+            );
             ExitCode::FAILURE
         }
     }
 }
 
 fn run() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_target(false)
-        .without_time()
-        .init();
+    if let Some(writer) = diagnostics::tracing_writer() {
+        tracing_subscriber::fmt()
+            .with_env_filter(runtime_log_filter())
+            .with_target(false)
+            .without_time()
+            .with_writer(writer)
+            .try_init()
+            .map_err(|error| anyhow::anyhow!("诊断日志初始化失败：{error}"))?;
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(runtime_log_filter())
+            .with_target(false)
+            .without_time()
+            .with_writer(std::io::sink)
+            .try_init()
+            .map_err(|error| anyhow::anyhow!("诊断日志初始化失败：{error}"))?;
+    }
+    tracing::info!("应用启动");
 
     let initial_invocation = ToolInvocation::from_command_line()?;
     let instance = SingleInstance::acquire(initial_invocation.clone())?;
@@ -55,11 +70,16 @@ fn run() -> anyhow::Result<()> {
         InstanceRole::Secondary => return Ok(()),
         InstanceRole::Primary(primary) => primary,
     };
+    tracing::info!("单实例主进程已就绪");
     let receiver = primary_instance.take_receiver();
     // primary_instance 必须保留在 main 的作用域内，确保互斥体句柄直到 run_native 返回后才关闭。
 
     let settings_store = SettingsStore::open()?;
-    let settings = settings_store.load();
+    let loaded_settings = settings_store.load();
+    if loaded_settings.warning.is_some() {
+        tracing::warn!("设置加载失败，已回退默认值并保留唯一损坏备份");
+    }
+    let settings = loaded_settings.settings;
     let native_options = app::native_options(&settings, settings_store.eframe_storage_path());
 
     eframe::run_native(
@@ -70,24 +90,23 @@ fn run() -> anyhow::Result<()> {
                 creation_context,
                 settings_store,
                 settings,
+                loaded_settings.warning,
                 receiver,
                 initial_invocation,
-            )))
+            )?))
         }),
     )
     .map_err(|error| anyhow::anyhow!("GUI 初始化失败: {error}"))
 }
 
+fn runtime_log_filter() -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+}
+
 /// 启动阶段失败优先写入用户本地诊断文件，目录不可用时回退 TEMP；两者失败仍显示消息框。
-fn report_startup_failure(message: &str) {
-    let primary = directories::ProjectDirs::from("com", "Toolbox", "WindowsToolbox")
-        .map(|dirs| dirs.config_local_dir().to_path_buf());
-    let diagnostic_path = primary
-        .and_then(|directory| append_diagnostic(&directory, message))
-        .or_else(|| {
-            std::env::var_os("TEMP")
-                .and_then(|directory| append_diagnostic(&PathBuf::from(directory), message))
-        });
+fn report_startup_failure(message: &str, kind: diagnostics::StartupFailureKind) {
+    let diagnostic_path = diagnostics::append_startup_failure(kind, message);
     let message = diagnostic_path.map_or_else(
         || format!("{message}\n诊断日志写入失败。"),
         |path| format!("{message}\n诊断日志：{}", path.display()),
@@ -103,19 +122,4 @@ fn report_startup_failure(message: &str) {
             MB_OK | MB_ICONERROR,
         )
     };
-}
-
-/// 诊断文件采用追加写入，目录或文件不可写时返回 None 让调用方尝试 TEMP 回退。
-fn append_diagnostic(directory: &PathBuf, message: &str) -> Option<PathBuf> {
-    fs::create_dir_all(directory).ok()?;
-    let path = directory.join("startup-diagnostic.txt");
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-    use std::io::Write;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .ok()?;
-    writeln!(file, "[{timestamp}] {message}").ok()?;
-    Some(path)
 }

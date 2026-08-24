@@ -1,7 +1,8 @@
-//! 工具模块抽象与 V0.1 工具注册。
+//! 工具模块抽象与当前版本工具注册。
 //! 新工具只需实现 ToolModule 并在 build_registry 注册，即可由导航、搜索和首页自动发现。
 
 mod file_lock;
+mod network_tools;
 mod port_inspector;
 mod process_inspector;
 pub mod registry;
@@ -24,18 +25,28 @@ pub trait ToolModule: Send {
     fn ui(&mut self, ui: &mut egui::Ui, context: ToolUiContext) -> Vec<AppAction>;
     fn handle_invocation(&mut self, payload: ToolPayload) -> Vec<AppAction>;
     fn handle_task_result(&mut self, result: TaskResult);
+    /// 接收长任务的非终态进度；短任务和不需要进度的工具使用默认空实现。
+    fn handle_task_progress(
+        &mut self,
+        _message: String,
+        _completed: Option<u64>,
+        _total: Option<u64>,
+    ) {
+    }
     fn set_busy(&mut self, busy: bool);
-    fn is_busy(&self) -> bool;
     fn poll_actions(&mut self, _now: Instant) -> Vec<AppAction> {
         Vec::new()
     }
 }
 
-/// V0.1 的内建工具清单。这里是新增模块唯一需要接入外壳的注册位置。
+/// V0.2.0 的内建工具清单。这里是新增模块唯一需要接入外壳的注册位置。
 pub fn build_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::default();
     registry.register(Box::new(file_lock::FileLockTool::default()));
     registry.register(Box::new(port_inspector::PortInspectorTool::default()));
     registry.register(Box::new(process_inspector::ProcessInspectorTool::default()));
+    registry.register(Box::new(network_tools::DnsLookupTool::default()));
+    registry.register(Box::new(network_tools::PingTool::default()));
+    registry.register(Box::new(network_tools::TcpProbeTool::default()));
     registry
 }

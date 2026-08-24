@@ -23,6 +23,8 @@ pub enum ToolPayload {
     FilePath { path: PathBuf },
     Port { port: u16 },
     Process { pid: u32 },
+    Host { host: String },
+    HostPort { host: String, port: u16 },
 }
 
 impl ToolInvocation {
@@ -53,6 +55,33 @@ impl ToolInvocation {
         }
     }
 
+    /// 创建内部跨工具调用，复用现有 Process 载荷让端口页按 PID 精确筛选。
+    pub fn ports_for_process(pid: u32) -> Self {
+        Self {
+            tool_id: "port-inspector".to_owned(),
+            payload: ToolPayload::Process { pid },
+        }
+    }
+
+    /// 创建 DNS、Ping 等主机类工具的内部跳转调用。
+    pub fn host(tool_id: impl Into<String>, host: impl Into<String>) -> Self {
+        Self {
+            tool_id: tool_id.into(),
+            payload: ToolPayload::Host { host: host.into() },
+        }
+    }
+
+    /// 创建 TCP 端口测试的内部跳转调用。
+    pub fn tcp_probe(host: impl Into<String>, port: u16) -> Self {
+        Self {
+            tool_id: "tcp-probe".to_owned(),
+            payload: ToolPayload::HostPort {
+                host: host.into(),
+                port,
+            },
+        }
+    }
+
     pub fn from_command_line() -> Result<Option<Self>, AppError> {
         Self::parse(std::env::args_os().skip(1))
     }
@@ -65,6 +94,7 @@ impl ToolInvocation {
         let mut path = None;
         let mut port = None;
         let mut pid = None;
+        let mut host = None;
         let mut values = args.into_iter();
 
         while let Some(argument) = values.next() {
@@ -97,6 +127,9 @@ impl ToolInvocation {
                     }
                     pid = Some(parsed);
                 }
+                "--host" => {
+                    host = Some(next_value(&mut values, "--host")?);
+                }
                 unknown => {
                     return Err(AppError::InvalidInput(format!(
                         "不支持的启动参数：{unknown}"
@@ -106,9 +139,9 @@ impl ToolInvocation {
         }
 
         let Some(tool_id) = tool_id else {
-            if path.is_some() || port.is_some() || pid.is_some() {
+            if path.is_some() || port.is_some() || pid.is_some() || host.is_some() {
                 return Err(AppError::InvalidInput(
-                    "使用 --path、--port 或 --pid 时必须指定 --tool。".into(),
+                    "使用 --path、--port、--pid 或 --host 时必须指定 --tool。".into(),
                 ));
             }
             return Ok(None);
@@ -127,6 +160,16 @@ impl ToolInvocation {
                 pid: pid.ok_or_else(|| {
                     AppError::InvalidInput("process-inspector 需要 --pid。".into())
                 })?,
+            },
+            "dns-lookup" | "ping" => ToolPayload::Host {
+                host: host
+                    .ok_or_else(|| AppError::InvalidInput(format!("{tool_id} 需要 --host。")))?,
+            },
+            "tcp-probe" => ToolPayload::HostPort {
+                host: host
+                    .ok_or_else(|| AppError::InvalidInput("tcp-probe 需要 --host。".into()))?,
+                port: port
+                    .ok_or_else(|| AppError::InvalidInput("tcp-probe 需要 --port。".into()))?,
             },
             _ => {
                 return Err(AppError::InvalidInput(format!("未知工具 ID：{tool_id}")));
@@ -234,5 +277,48 @@ mod tests {
     #[test]
     fn parse_without_arguments_keeps_existing_none_semantics() {
         assert_eq!(ToolInvocation::parse(Vec::<OsString>::new()).unwrap(), None);
+    }
+
+    #[test]
+    fn internal_port_pid_jump_reuses_existing_wire_payload() {
+        let invocation = ToolInvocation::ports_for_process(42);
+        assert_eq!(invocation.tool_id, "port-inspector");
+        assert_eq!(invocation.payload, ToolPayload::Process { pid: 42 });
+        let encoded = serde_json::to_vec(&invocation).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<ToolInvocation>(&encoded).unwrap(),
+            invocation
+        );
+    }
+
+    #[test]
+    fn parses_network_tool_invocations() {
+        let dns = ToolInvocation::parse([
+            OsString::from("--tool"),
+            OsString::from("dns-lookup"),
+            OsString::from("--host"),
+            OsString::from("example.com"),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(dns.tool_id, "dns-lookup");
+        assert!(matches!(dns.payload, ToolPayload::Host { .. }));
+        let tcp = ToolInvocation::parse([
+            OsString::from("--tool"),
+            OsString::from("tcp-probe"),
+            OsString::from("--host"),
+            OsString::from("localhost"),
+            OsString::from("--port"),
+            OsString::from("443"),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            tcp.payload,
+            ToolPayload::HostPort {
+                host: "localhost".into(),
+                port: 443
+            }
+        );
     }
 }

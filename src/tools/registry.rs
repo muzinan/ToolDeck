@@ -24,6 +24,9 @@ pub enum ToolIcon {
     FileLock,
     Network,
     Process,
+    Dns,
+    Ping,
+    TcpProbe,
 }
 
 impl ToolCategory {
@@ -195,10 +198,6 @@ mod tests {
 
         fn set_busy(&mut self, _busy: bool) {}
 
-        fn is_busy(&self) -> bool {
-            false
-        }
-
         fn poll_actions(&mut self, _now: Instant) -> Vec<AppAction> {
             Vec::new()
         }
@@ -207,7 +206,7 @@ mod tests {
     #[test]
     fn registry_exposes_all_v0_tools() {
         let registry = build_registry();
-        assert_eq!(registry.descriptors().len(), 3);
+        assert_eq!(registry.descriptors().len(), 6);
         assert_eq!(registry.categories().len(), 3);
     }
 
@@ -258,6 +257,30 @@ mod tests {
                 .unwrap()
                 .icon,
             ToolIcon::Process
+        );
+        assert_eq!(
+            descriptors
+                .iter()
+                .find(|tool| tool.id == "dns-lookup")
+                .unwrap()
+                .icon,
+            ToolIcon::Dns
+        );
+        assert_eq!(
+            descriptors
+                .iter()
+                .find(|tool| tool.id == "ping")
+                .unwrap()
+                .icon,
+            ToolIcon::Ping
+        );
+        assert_eq!(
+            descriptors
+                .iter()
+                .find(|tool| tool.id == "tcp-probe")
+                .unwrap()
+                .icon,
+            ToolIcon::TcpProbe
         );
     }
 }

@@ -55,32 +55,61 @@ impl ToolModule for FileLockTool {
         );
         ui.add_space(ui::SPACE_16);
         ui::card(ui, |ui| {
-            let render_controls = |ui: &mut egui::Ui| {
-                ui.add_sized(
-                    [
-                        if matches!(
-                            ui::action_layout(ui.available_width()),
-                            ui::ActionLayout::Horizontal
-                        ) {
-                            (ui.available_width() - 88.0).max(120.0)
-                        } else {
-                            ui.available_width()
-                        },
-                        34.0,
-                    ],
-                    TextEdit::singleline(&mut self.path)
-                        .hint_text("输入文件完整路径或直接拖入文件"),
-                );
-                let query = ui
-                    .add_enabled_ui(!self.busy, |ui| ui::primary_button(ui, "查询"))
-                    .inner;
-                if query.clicked() {
-                    actions.extend(self.start_query());
-                }
-            };
             match ui::action_layout(ui.available_width()) {
-                ui::ActionLayout::Horizontal => ui.horizontal(render_controls),
-                ui::ActionLayout::Vertical => ui.vertical(render_controls),
+                ui::ActionLayout::Horizontal => {
+                    let mut submit = false;
+                    ui.horizontal(|ui| {
+                        let button_width = 76.0;
+                        let input_width = (ui.available_width()
+                            - button_width * 2.0
+                            - ui.spacing().item_spacing.x * 2.0)
+                            .max(120.0);
+                        let input = ui.add_sized(
+                            [input_width, 34.0],
+                            TextEdit::singleline(&mut self.path)
+                                .hint_text("输入文件完整路径或直接拖入文件"),
+                        );
+                        submit |= input.lost_focus()
+                            && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                        if ui
+                            .add_sized([button_width, 34.0], egui::Button::new("选择文件"))
+                            .clicked()
+                        {
+                            actions.push(AppAction::PickFileForLocks);
+                        }
+                        if ui::primary_button_sized(
+                            ui,
+                            if self.busy { "重查" } else { "查询" },
+                            [button_width, 34.0],
+                        )
+                        .clicked()
+                        {
+                            submit = true;
+                        }
+                    });
+                    if submit {
+                        actions.extend(self.start_query());
+                    }
+                }
+                ui::ActionLayout::Vertical => {
+                    let input = ui.add_sized(
+                        [ui.available_width(), 34.0],
+                        TextEdit::singleline(&mut self.path)
+                            .hint_text("输入文件完整路径或直接拖入文件"),
+                    );
+                    let submit_from_keyboard =
+                        input.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button("选择文件").clicked() {
+                            actions.push(AppAction::PickFileForLocks);
+                        }
+                        if ui::primary_button(ui, if self.busy { "重查" } else { "查询" }).clicked()
+                            || submit_from_keyboard
+                        {
+                            actions.extend(self.start_query());
+                        }
+                    });
+                }
             };
         });
 
@@ -95,18 +124,17 @@ impl ToolModule for FileLockTool {
         if let Some(result) = &self.result {
             ui.add_space(20.0);
             match result {
-                Ok(result) if result.processes.is_empty() => empty_state(
-                    ui,
-                    "没有检测到进程占用该文件",
-                    "Restart Manager 未返回任何占用者。",
-                ),
+                Ok(result) if result.processes.is_empty() => {
+                    render_file_result_header(ui, result, &mut actions);
+                    ui.add_space(ui::SPACE_12);
+                    empty_state(
+                        ui,
+                        "没有检测到进程占用该文件",
+                        "Restart Manager 未返回任何占用者。",
+                    );
+                }
                 Ok(result) => {
-                    ui::card(ui, |ui| {
-                        ui.label(RichText::new("查询文件").strong());
-                        ui.add_space(ui::SPACE_4);
-                        ui.add(egui::Label::new(RichText::new(&result.path).monospace()).wrap())
-                            .on_hover_text(&result.path);
-                    });
+                    render_file_result_header(ui, result, &mut actions);
                     ui.add_space(ui::SPACE_12);
                     ui.label(
                         RichText::new("正在使用")
@@ -125,6 +153,23 @@ impl ToolModule for FileLockTool {
                                 if ui.small_button("复制 PID").clicked() {
                                     actions.push(AppAction::CopyText(process.pid.to_string()));
                                 }
+                                if let Some(path) = &process.exe_path {
+                                    if ui
+                                        .small_button("复制路径")
+                                        .on_hover_text("复制进程可执行文件完整路径")
+                                        .clicked()
+                                    {
+                                        actions.push(AppAction::CopyText(path.clone()));
+                                    }
+                                    if ui
+                                        .small_button("打开所在位置")
+                                        .on_hover_text("在资源管理器中选中进程可执行文件")
+                                        .clicked()
+                                    {
+                                        actions
+                                            .push(AppAction::OpenFileLocation(PathBuf::from(path)));
+                                    }
+                                }
                             };
                             let render_details = |ui: &mut egui::Ui| {
                                 ui.add(
@@ -139,7 +184,7 @@ impl ToolModule for FileLockTool {
                             };
                             match ui::action_layout(ui.available_width()) {
                                 ui::ActionLayout::Horizontal => {
-                                    let action_width = 164.0;
+                                    let action_width = 360.0_f32.min(ui.available_width() * 0.55);
                                     let info_width =
                                         (ui.available_width() - action_width - ui::SPACE_8)
                                             .max(160.0);
@@ -151,8 +196,10 @@ impl ToolModule for FileLockTool {
                                         );
                                         ui.allocate_ui_with_layout(
                                             egui::vec2(action_width, 0.0),
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            render_actions,
+                                            egui::Layout::top_down(egui::Align::Max),
+                                            |ui| {
+                                                ui.horizontal_wrapped(render_actions);
+                                            },
                                         );
                                     });
                                 }
@@ -200,10 +247,6 @@ impl ToolModule for FileLockTool {
     fn set_busy(&mut self, busy: bool) {
         self.busy = busy;
     }
-
-    fn is_busy(&self) -> bool {
-        self.busy
-    }
 }
 
 impl FileLockTool {
@@ -222,6 +265,48 @@ impl FileLockTool {
     }
 }
 
+fn file_lock_report(result: &FileLockResult) -> String {
+    let mut report = format!("Windows Toolbox 文件占用报告\n文件：{}\n", result.path);
+    if result.processes.is_empty() {
+        report.push_str("占用进程：无\n");
+        return report;
+    }
+    report.push_str(&format!("占用进程：{} 个\n", result.processes.len()));
+    for process in &result.processes {
+        report.push_str(&format!("- {} (PID {})", process.name, process.pid));
+        if let Some(path) = &process.exe_path {
+            report.push_str(&format!("\n  路径：{path}"));
+        }
+        report.push('\n');
+    }
+    report
+}
+
+fn render_file_result_header(
+    ui: &mut egui::Ui,
+    result: &FileLockResult,
+    actions: &mut Vec<AppAction>,
+) {
+    ui::card(ui, |ui| {
+        ui.label(RichText::new("查询文件").strong());
+        ui.add_space(ui::SPACE_4);
+        ui.add(egui::Label::new(RichText::new(&result.path).monospace()).wrap())
+            .on_hover_text(&result.path);
+        ui.add_space(ui::SPACE_8);
+        ui.horizontal_wrapped(|ui| {
+            if ui.small_button("复制路径").clicked() {
+                actions.push(AppAction::CopyText(result.path.clone()));
+            }
+            if ui.small_button("打开所在位置").clicked() {
+                actions.push(AppAction::OpenFileLocation(PathBuf::from(&result.path)));
+            }
+            if ui.small_button("复制完整报告").clicked() {
+                actions.push(AppAction::CopyText(file_lock_report(result)));
+            }
+        });
+    });
+}
+
 pub(crate) fn heading(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     ui::page_heading(ui, title, subtitle);
 }
@@ -233,4 +318,26 @@ pub(crate) fn empty_state(ui: &mut egui::Ui, title: &str, detail: &str) {
 pub(crate) fn error_state(ui: &mut egui::Ui, error: &AppError) {
     let (title, detail) = error.user_message();
     ui::state_card(ui, title, &detail, ui::danger_text(ui));
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::model::{FileLockResult, ProcessSummary};
+
+    use super::file_lock_report;
+
+    #[test]
+    fn full_report_contains_file_and_process_details() {
+        let report = file_lock_report(&FileLockResult {
+            path: r"C:\测试\data.db".into(),
+            processes: vec![ProcessSummary {
+                pid: 42,
+                name: "工具😀.exe".into(),
+                exe_path: Some(r"C:\Apps\sample.exe".into()),
+            }],
+        });
+        assert!(report.contains(r"C:\测试\data.db"));
+        assert!(report.contains("工具😀.exe (PID 42)"));
+        assert!(report.contains(r"C:\Apps\sample.exe"));
+    }
 }

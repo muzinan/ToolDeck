@@ -24,12 +24,14 @@ pub struct ProcessInfo {
     pub name: String,
     /// 可执行文件完整路径，来源于 QueryFullProcessImageNameW。
     pub exe_path: Option<String>,
-    /// 命令行；V0.1 不使用未公开 NT API，无法可靠读取时为 `None`。
+    /// 命令行；当前版本不使用未公开 NT API，无法可靠读取时为 `None`。
     pub command_line: Option<String>,
     /// 本地创建时间字符串，来源于 GetProcessTimes；无权限时为 `None`。
     pub started_at: Option<String>,
     /// 从最早父进程到当前进程的完整链路，包含当前进程。
     pub parent_chain: Vec<ProcessSummary>,
+    /// 当前快照中父 PID 等于本进程 PID 的直接子进程，不递归展开。
+    pub children: Vec<ProcessSummary>,
 }
 
 impl ProcessInfo {

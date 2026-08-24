@@ -321,6 +321,14 @@ pub fn primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add(button)
 }
 
+/// 在响应式操作栏中按预留尺寸绘制主按钮，颜色与普通主按钮保持一致。
+pub fn primary_button_sized(ui: &mut egui::Ui, text: &str, size: [f32; 2]) -> egui::Response {
+    let button = egui::Button::new(RichText::new(text).color(Color32::WHITE).strong())
+        .fill(primary_button_fill(ui))
+        .stroke(Stroke::NONE);
+    ui.add_sized(size, button)
+}
+
 pub fn danger_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add(
         egui::Button::new(RichText::new(text).color(Color32::WHITE).strong())
@@ -401,6 +409,14 @@ pub fn paint_tool_icon(
             painter.circle_filled(top, size * 0.09, color);
             painter.circle_filled(left, size * 0.09, color);
             painter.circle_filled(right, size * 0.09, color);
+        }
+        ToolIcon::Dns | ToolIcon::Ping | ToolIcon::TcpProbe => {
+            painter.circle_stroke(rect.center(), size * 0.28, stroke);
+            painter.line_segment([rect.left_center(), rect.right_center()], stroke);
+            painter.line_segment([rect.center_top(), rect.center_bottom()], stroke);
+            if matches!(icon, ToolIcon::TcpProbe) {
+                painter.line_segment([rect.left_bottom(), rect.right_top()], stroke);
+            }
         }
     }
 }

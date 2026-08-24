@@ -51,6 +51,20 @@ pub fn query_process(pid: u32) -> Result<ProcessInfo, AppError> {
     let exe_path = query_exe_path(pid).ok();
     let started_at = query_started_at(pid).ok();
 
+    let mut parent_chain = build_parent_chain(pid, &by_pid);
+    fill_process_paths(&mut parent_chain);
+    let mut children = processes
+        .iter()
+        .filter(|process| process.parent_pid == pid)
+        .map(|process| ProcessSummary {
+            pid: process.pid,
+            name: process.name.clone(),
+            exe_path: None,
+        })
+        .collect::<Vec<_>>();
+    fill_process_paths(&mut children);
+    children.sort_by_key(|process| process.pid);
+
     Ok(ProcessInfo {
         pid,
         parent_pid: (current.parent_pid != 0).then_some(current.parent_pid),
@@ -58,8 +72,15 @@ pub fn query_process(pid: u32) -> Result<ProcessInfo, AppError> {
         exe_path,
         command_line: None,
         started_at,
-        parent_chain: build_parent_chain(pid, &by_pid),
+        parent_chain,
+        children,
     })
+}
+
+fn fill_process_paths(processes: &mut [ProcessSummary]) {
+    for process in processes {
+        process.exe_path = query_exe_path(process.pid).ok();
+    }
 }
 
 /// 为其他平台服务提供低成本进程名称与路径查询。
