@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use eframe::egui::{self, RichText, TextEdit};
+use eframe::egui::{self, RichText};
 
 use crate::{
     core::{
@@ -51,7 +51,7 @@ impl ToolModule for FileLockTool {
         heading(
             ui,
             "文件占用",
-            "使用 Windows Restart Manager 查找正在占用文件的进程。",
+            "使用 Windows Restart Manager 查找正在占用文件的进程与句柄。",
         );
         ui.add_space(ui::SPACE_16);
         ui::card(ui, |ui| {
@@ -59,28 +59,37 @@ impl ToolModule for FileLockTool {
                 ui::ActionLayout::Horizontal => {
                     let mut submit = false;
                     ui.horizontal(|ui| {
-                        let button_width = 76.0;
+                        let button_width = 86.0;
                         let input_width = (ui.available_width()
                             - button_width * 2.0
                             - ui.spacing().item_spacing.x * 2.0)
-                            .max(120.0);
+                            .max(140.0);
                         let input = ui.add_sized(
-                            [input_width, 34.0],
-                            TextEdit::singleline(&mut self.path)
-                                .hint_text("输入文件完整路径或直接拖入文件"),
+                            [input_width, ui::CONTROL_HEIGHT],
+                            ui::text_input(
+                                &mut self.path,
+                                "输入或粘贴文件完整路径，或直接拖拽文件入内",
+                            ),
                         );
                         submit |= input.lost_focus()
                             && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                        if ui
-                            .add_sized([button_width, 34.0], egui::Button::new("选择文件"))
-                            .clicked()
+                        if ui::secondary_button_sized(
+                            ui,
+                            "选择文件",
+                            [button_width, ui::CONTROL_HEIGHT],
+                        )
+                        .clicked()
                         {
                             actions.push(AppAction::PickFileForLocks);
                         }
                         if ui::primary_button_sized(
                             ui,
-                            if self.busy { "重查" } else { "查询" },
-                            [button_width, 34.0],
+                            if self.busy {
+                                "重新查询"
+                            } else {
+                                "查询占用"
+                            },
+                            [button_width, ui::CONTROL_HEIGHT],
                         )
                         .clicked()
                         {
@@ -93,17 +102,28 @@ impl ToolModule for FileLockTool {
                 }
                 ui::ActionLayout::Vertical => {
                     let input = ui.add_sized(
-                        [ui.available_width(), 34.0],
-                        TextEdit::singleline(&mut self.path)
-                            .hint_text("输入文件完整路径或直接拖入文件"),
+                        [ui.available_width(), ui::CONTROL_HEIGHT],
+                        ui::text_input(
+                            &mut self.path,
+                            "输入或粘贴文件完整路径，或直接拖拽文件入内",
+                        ),
                     );
                     let submit_from_keyboard =
                         input.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                    ui.add_space(ui::SPACE_8);
                     ui.horizontal_wrapped(|ui| {
-                        if ui.button("选择文件").clicked() {
+                        if ui::secondary_button(ui, "选择文件").clicked() {
                             actions.push(AppAction::PickFileForLocks);
                         }
-                        if ui::primary_button(ui, if self.busy { "重查" } else { "查询" }).clicked()
+                        if ui::primary_button(
+                            ui,
+                            if self.busy {
+                                "重新查询"
+                            } else {
+                                "查询占用"
+                            },
+                        )
+                        .clicked()
                             || submit_from_keyboard
                         {
                             actions.extend(self.start_query());
@@ -117,52 +137,53 @@ impl ToolModule for FileLockTool {
             ui.add_space(ui::SPACE_16);
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("正在查询文件占用...");
+                ui.label(RichText::new("正在通过 Restart Manager 检索占用进程...").size(13.5));
             });
         }
 
         if let Some(result) = &self.result {
-            ui.add_space(20.0);
+            ui.add_space(ui::SPACE_16);
             match result {
                 Ok(result) if result.processes.is_empty() => {
                     render_file_result_header(ui, result, &mut actions);
                     ui.add_space(ui::SPACE_12);
                     empty_state(
                         ui,
-                        "没有检测到进程占用该文件",
-                        "Restart Manager 未返回任何占用者。",
+                        "未检测到文件被任何进程占用",
+                        "Restart Manager 未返回任何占用者，文件当前可被安全移动、编辑或删除。",
                     );
                 }
                 Ok(result) => {
                     render_file_result_header(ui, result, &mut actions);
-                    ui.add_space(ui::SPACE_12);
-                    ui.label(
-                        RichText::new("正在使用")
-                            .color(ui::success_text(ui))
-                            .strong(),
-                    );
+                    ui.add_space(ui::SPACE_16);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("检测到 {} 个占用进程", result.processes.len()))
+                                .color(ui::danger_text(ui))
+                                .strong()
+                                .size(15.0),
+                        );
+                    });
                     ui.add_space(ui::SPACE_8);
                     for process in &result.processes {
                         ui::card(ui, |ui| {
                             let render_actions = |ui: &mut egui::Ui| {
-                                if ui::primary_button(ui, "查看进程").clicked() {
+                                if ui::small_action_button(ui, "查看进程").clicked() {
                                     actions.push(AppAction::InvokeTool(ToolInvocation::process(
                                         process.pid,
                                     )));
                                 }
-                                if ui.small_button("复制 PID").clicked() {
+                                if ui::small_action_button(ui, "复制 PID").clicked() {
                                     actions.push(AppAction::CopyText(process.pid.to_string()));
                                 }
                                 if let Some(path) = &process.exe_path {
-                                    if ui
-                                        .small_button("复制路径")
+                                    if ui::small_action_button(ui, "复制路径")
                                         .on_hover_text("复制进程可执行文件完整路径")
                                         .clicked()
                                     {
                                         actions.push(AppAction::CopyText(path.clone()));
                                     }
-                                    if ui
-                                        .small_button("打开所在位置")
+                                    if ui::small_action_button(ui, "定位文件")
                                         .on_hover_text("在资源管理器中选中进程可执行文件")
                                         .clicked()
                                     {
@@ -171,20 +192,43 @@ impl ToolModule for FileLockTool {
                                     }
                                 }
                             };
-                            let render_details = |ui: &mut egui::Ui| {
-                                ui.add(
-                                    egui::Label::new(RichText::new(&process.name).strong()).wrap(),
-                                )
-                                .on_hover_text(&process.name);
-                                ui.label(format!("PID {}", process.pid));
-                                if let Some(path) = &process.exe_path {
-                                    ui.add(egui::Label::new(RichText::new(path).small()).wrap())
+                            let render_details =
+                                |ui: &mut egui::Ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(&process.name).strong().size(15.0),
+                                            )
+                                            .wrap(),
+                                        )
+                                        .on_hover_text(&process.name);
+                                        let palette = ui::palette_for_ui(ui);
+                                        ui::badge(
+                                            ui,
+                                            &format!("PID: {}", process.pid),
+                                            palette.accent,
+                                            palette.accent.gamma_multiply(
+                                                if ui.visuals().dark_mode { 0.22 } else { 0.12 },
+                                            ),
+                                        );
+                                    });
+                                    if let Some(path) = &process.exe_path {
+                                        ui.add_space(2.0);
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(path)
+                                                    .monospace()
+                                                    .small()
+                                                    .color(ui.visuals().weak_text_color()),
+                                            )
+                                            .wrap(),
+                                        )
                                         .on_hover_text(path);
-                                }
-                            };
+                                    }
+                                };
                             match ui::action_layout(ui.available_width()) {
                                 ui::ActionLayout::Horizontal => {
-                                    let action_width = 360.0_f32.min(ui.available_width() * 0.55);
+                                    let action_width = 320.0_f32.min(ui.available_width() * 0.55);
                                     let info_width =
                                         (ui.available_width() - action_width - ui::SPACE_8)
                                             .max(160.0);
@@ -216,11 +260,11 @@ impl ToolModule for FileLockTool {
                 Err(error) => error_state(ui, error),
             }
         } else if !self.busy {
-            ui.add_space(44.0);
+            ui.add_space(36.0);
             empty_state(
                 ui,
-                "选择一个文件开始查询",
-                "支持输入路径、拖入文件或从资源管理器右键菜单打开。",
+                "选择或拖入文件开始查询",
+                "支持直接输入路径、点击“选择文件”或从资源管理器右键菜单快捷打开。",
             )
         }
         actions
@@ -288,19 +332,26 @@ fn render_file_result_header(
     actions: &mut Vec<AppAction>,
 ) {
     ui::card(ui, |ui| {
-        ui.label(RichText::new("查询文件").strong());
+        ui.label(RichText::new("目标文件").strong().size(14.5));
         ui.add_space(ui::SPACE_4);
-        ui.add(egui::Label::new(RichText::new(&result.path).monospace()).wrap())
-            .on_hover_text(&result.path);
+        ui.add(
+            egui::Label::new(
+                RichText::new(&result.path)
+                    .monospace()
+                    .color(ui::accent(ui)),
+            )
+            .wrap(),
+        )
+        .on_hover_text(&result.path);
         ui.add_space(ui::SPACE_8);
         ui.horizontal_wrapped(|ui| {
-            if ui.small_button("复制路径").clicked() {
+            if ui::small_action_button(ui, "复制路径").clicked() {
                 actions.push(AppAction::CopyText(result.path.clone()));
             }
-            if ui.small_button("打开所在位置").clicked() {
+            if ui::small_action_button(ui, "在资源管理器中定位").clicked() {
                 actions.push(AppAction::OpenFileLocation(PathBuf::from(&result.path)));
             }
-            if ui.small_button("复制完整报告").clicked() {
+            if ui::small_action_button(ui, "复制完整报告").clicked() {
                 actions.push(AppAction::CopyText(file_lock_report(result)));
             }
         });

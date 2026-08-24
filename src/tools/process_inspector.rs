@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use eframe::egui::{self, RichText, TextEdit};
+use eframe::egui::{self, RichText};
 
 use crate::{
     core::{
@@ -53,7 +53,7 @@ impl ToolModule for ProcessInspectorTool {
         heading(
             ui,
             "进程关系",
-            "查看进程详情与完整父进程链，理解它从哪里启动。",
+            "通过 Toolhelp 快照查看进程详情与完整父进程链，追溯进程启动来源。",
         );
         ui.add_space(ui::SPACE_16);
         ui::card(ui, |ui| {
@@ -61,21 +61,29 @@ impl ToolModule for ProcessInspectorTool {
                 ui::ActionLayout::Horizontal => {
                     let mut submit = false;
                     ui.horizontal(|ui| {
+                        let button_width = 110.0;
+                        let input_width =
+                            (ui.available_width() - button_width - ui.spacing().item_spacing.x)
+                                .max(160.0);
                         let input = ui.add_sized(
-                            [(ui.available_width() - 104.0).max(160.0), 32.0],
-                            TextEdit::singleline(&mut self.pid_input).hint_text("输入 PID"),
+                            [input_width, ui::CONTROL_HEIGHT],
+                            ui::text_input(&mut self.pid_input, "输入目标进程 PID (如 1234)"),
                         );
                         submit |= input.lost_focus()
                             && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                        submit |= ui::primary_button(
+                        if ui::primary_button_sized(
                             ui,
                             if self.busy {
-                                "再次查看"
+                                "重新查询"
                             } else {
                                 "查看进程"
                             },
+                            [button_width, ui::CONTROL_HEIGHT],
                         )
-                        .clicked();
+                        .clicked()
+                        {
+                            submit = true;
+                        }
                     });
                     if submit {
                         actions.extend(self.start_query());
@@ -83,15 +91,16 @@ impl ToolModule for ProcessInspectorTool {
                 }
                 ui::ActionLayout::Vertical => {
                     let input = ui.add_sized(
-                        [ui.available_width(), 32.0],
-                        TextEdit::singleline(&mut self.pid_input).hint_text("输入 PID"),
+                        [ui.available_width(), ui::CONTROL_HEIGHT],
+                        ui::text_input(&mut self.pid_input, "输入目标进程 PID (如 1234)"),
                     );
                     let submit =
                         input.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                    ui.add_space(ui::SPACE_8);
                     if ui::primary_button(
                         ui,
                         if self.busy {
-                            "再次查看"
+                            "重新查询"
                         } else {
                             "查看进程"
                         },
@@ -109,22 +118,22 @@ impl ToolModule for ProcessInspectorTool {
             ui.add_space(ui::SPACE_16);
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("正在读取进程信息...");
+                ui.label(RichText::new("正在检索系统进程树快照与进程信息...").size(13.5));
             });
         }
 
         if let Some(result) = &self.result {
-            ui.add_space(ui::SPACE_24);
+            ui.add_space(ui::SPACE_16);
             match result {
                 Ok(process) => self.render_process(ui, process, &mut actions),
                 Err(error) => error_state(ui, error),
             }
         } else if !self.busy {
-            ui.add_space(44.0);
+            ui.add_space(36.0);
             empty_state(
                 ui,
-                "输入 PID 查看进程来源",
-                "端口和文件占用页面中的进程名称也可以直接跳转到这里。",
+                "输入 PID 查看进程来源与层级",
+                "支持直接输入 PID 查询；端口占用与文件占用页面中的进程名称也可一键点击跳转至此。",
             )
         }
         actions
@@ -182,152 +191,172 @@ impl ProcessInspectorTool {
         process: &ProcessInfo,
         actions: &mut Vec<AppAction>,
     ) {
-        ui::card(ui, |ui| {
-            let render_actions = |ui: &mut egui::Ui| {
-                if ui::primary_button(ui, "刷新").clicked() {
-                    actions.push(AppAction::InspectProcess { pid: process.pid });
-                }
-                if ui.small_button("查看端口").clicked() {
-                    actions.push(AppAction::InvokeTool(ToolInvocation::ports_for_process(
-                        process.pid,
-                    )));
-                }
-                if ui.small_button("复制报告").clicked() {
-                    actions.push(AppAction::CopyText(process_report(process)));
-                }
-                if ui::danger_button(ui, "结束进程").clicked() {
-                    actions.push(AppAction::RequestTerminateProcess(process.summary()));
-                }
-                if ui.small_button("复制 PID").clicked() {
-                    actions.push(AppAction::CopyText(process.pid.to_string()));
-                }
-            };
-            let render_summary = |ui: &mut egui::Ui| {
-                ui.add(egui::Label::new(RichText::new(&process.name).heading().strong()).wrap())
+        let palette = ui::palette_for_ui(ui);
+        ui::card(ui, |ui| match ui::action_layout(ui.available_width()) {
+            ui::ActionLayout::Horizontal => {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new(&process.name).size(18.0).strong()).wrap(),
+                    )
                     .on_hover_text(&process.name);
-                ui.label(format!("PID {}", process.pid));
-            };
-            match ui::action_layout(ui.available_width()) {
-                ui::ActionLayout::Horizontal => {
-                    let action_width = 420.0_f32.min(ui.available_width() * 0.58);
-                    let summary_width =
-                        (ui.available_width() - action_width - ui::SPACE_8).max(160.0);
-                    ui.horizontal(|ui| {
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(summary_width, 0.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            render_summary,
-                        );
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(action_width, 0.0),
-                            egui::Layout::top_down(egui::Align::Max),
-                            |ui| {
-                                ui.horizontal_wrapped(render_actions);
-                            },
-                        );
+                    ui::badge(
+                        ui,
+                        &format!("PID: {}", process.pid),
+                        palette.accent,
+                        palette.accent.gamma_multiply(if ui.visuals().dark_mode {
+                            0.22
+                        } else {
+                            0.12
+                        }),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui::danger_button(ui, "结束进程").clicked() {
+                            actions.push(AppAction::RequestTerminateProcess(process.summary()));
+                        }
+                        if ui::secondary_button(ui, "复制报告").clicked() {
+                            actions.push(AppAction::CopyText(process_report(process)));
+                        }
+                        if ui::secondary_button(ui, "复制 PID").clicked() {
+                            actions.push(AppAction::CopyText(process.pid.to_string()));
+                        }
+                        if ui::secondary_button(ui, "查看端口占用").clicked() {
+                            actions.push(AppAction::InvokeTool(ToolInvocation::ports_for_process(
+                                process.pid,
+                            )));
+                        }
+                        if ui::primary_button(ui, "刷新").clicked() {
+                            actions.push(AppAction::InspectProcess { pid: process.pid });
+                        }
                     });
-                }
-                ui::ActionLayout::Vertical => {
-                    ui.vertical(render_summary);
-                    ui.add_space(ui::SPACE_8);
-                    ui.horizontal_wrapped(render_actions);
-                }
+                });
+            }
+            ui::ActionLayout::Vertical => {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new(&process.name).size(18.0).strong()).wrap(),
+                    )
+                    .on_hover_text(&process.name);
+                    ui::badge(
+                        ui,
+                        &format!("PID: {}", process.pid),
+                        palette.accent,
+                        palette.accent.gamma_multiply(if ui.visuals().dark_mode {
+                            0.22
+                        } else {
+                            0.12
+                        }),
+                    );
+                });
+                ui.add_space(ui::SPACE_8);
+                ui.horizontal_wrapped(|ui| {
+                    if ui::primary_button(ui, "刷新").clicked() {
+                        actions.push(AppAction::InspectProcess { pid: process.pid });
+                    }
+                    if ui::secondary_button(ui, "查看端口占用").clicked() {
+                        actions.push(AppAction::InvokeTool(ToolInvocation::ports_for_process(
+                            process.pid,
+                        )));
+                    }
+                    if ui::secondary_button(ui, "复制 PID").clicked() {
+                        actions.push(AppAction::CopyText(process.pid.to_string()));
+                    }
+                    if ui::secondary_button(ui, "复制报告").clicked() {
+                        actions.push(AppAction::CopyText(process_report(process)));
+                    }
+                    if ui::danger_button(ui, "结束进程").clicked() {
+                        actions.push(AppAction::RequestTerminateProcess(process.summary()));
+                    }
+                });
             }
         });
         ui.add_space(ui::SPACE_12);
         ui::card(ui, |ui| {
-            ui.strong("路径");
+            ui.label(RichText::new("基础信息与属性").strong().size(14.5));
+            ui.add_space(ui::SPACE_12);
+
+            ui.horizontal(|ui| {
+                ui.strong("可执行文件路径");
+                if process.exe_path.is_some() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui::small_action_button(ui, "定位文件")
+                            .on_hover_text("在资源管理器中选中当前进程可执行文件")
+                            .clicked()
+                            && let Some(path) = &process.exe_path
+                        {
+                            actions.push(AppAction::OpenFileLocation(PathBuf::from(path)));
+                        }
+                        if ui::small_action_button(ui, "复制路径")
+                            .on_hover_text("复制当前进程可执行文件完整路径")
+                            .clicked()
+                            && let Some(path) = &process.exe_path
+                        {
+                            actions.push(AppAction::CopyText(path.clone()));
+                        }
+                    });
+                }
+            });
+            ui.add_space(4.0);
             let path = process
                 .exe_path
                 .as_deref()
-                .unwrap_or("无法读取，可能需要管理员权限");
-            match ui::action_layout(ui.available_width()) {
-                ui::ActionLayout::Horizontal if process.exe_path.is_some() => {
-                    let action_width = 214.0;
-                    let text_width = (ui.available_width() - action_width - ui::SPACE_8).max(160.0);
-                    ui.horizontal(|ui| {
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(text_width, 0.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                ui.add(egui::Label::new(RichText::new(path).monospace()).wrap())
-                                    .on_hover_text(path);
-                            },
-                        );
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(action_width, 0.0),
-                            egui::Layout::top_down(egui::Align::Max),
-                            |ui| {
-                                ui.horizontal_wrapped(|ui| {
-                                    if ui
-                                        .small_button("复制路径")
-                                        .on_hover_text("复制当前进程可执行文件完整路径")
-                                        .clicked()
-                                    {
-                                        actions.push(AppAction::CopyText(path.to_owned()));
-                                    }
-                                    if ui
-                                        .small_button("打开所在位置")
-                                        .on_hover_text("在资源管理器中选中当前进程可执行文件")
-                                        .clicked()
-                                    {
-                                        actions
-                                            .push(AppAction::OpenFileLocation(PathBuf::from(path)));
-                                    }
-                                });
-                            },
-                        );
-                    });
-                }
-                _ => {
-                    ui.add(egui::Label::new(RichText::new(path).monospace()).wrap())
-                        .on_hover_text(path);
-                    if process.exe_path.is_some() {
-                        ui.horizontal_wrapped(|ui| {
-                            if ui
-                                .small_button("复制路径")
-                                .on_hover_text("复制当前进程可执行文件完整路径")
-                                .clicked()
-                            {
-                                actions.push(AppAction::CopyText(path.to_owned()));
-                            }
-                            if ui
-                                .small_button("打开所在位置")
-                                .on_hover_text("在资源管理器中选中当前进程可执行文件")
-                                .clicked()
-                            {
-                                actions.push(AppAction::OpenFileLocation(PathBuf::from(path)));
-                            }
-                        });
-                    }
-                }
-            }
+                .unwrap_or("无法读取（受保护的系统进程可能需要管理员权限）");
+            ui.add(egui::Label::new(RichText::new(path).monospace().color(ui::accent(ui))).wrap())
+                .on_hover_text(path);
+
             ui.add_space(ui::SPACE_12);
-            ui.strong("命令行");
+            ui.strong("命令行参数");
+            ui.add_space(4.0);
             let command_line = process
                 .command_line
                 .as_deref()
-                .unwrap_or("当前版本未使用未公开 API 读取命令行");
-            ui.add(egui::Label::new(RichText::new(command_line).monospace()).wrap())
-                .on_hover_text(command_line);
-            ui.add_space(ui::SPACE_12);
-            ui.strong("启动时间");
-            ui.label(process.started_at.as_deref().unwrap_or("无法读取"));
-            ui.add_space(ui::SPACE_12);
-            ui.strong("父进程 PID");
-            ui.label(
-                process
-                    .parent_pid
-                    .map(|pid| pid.to_string())
-                    .unwrap_or_else(|| "无".into()),
-            );
+                .unwrap_or("未读取（当前版本为系统兼容性不依赖未公开 NT API）");
+            ui.add(
+                egui::Label::new(
+                    RichText::new(command_line)
+                        .monospace()
+                        .color(ui.visuals().weak_text_color()),
+                )
+                .wrap(),
+            )
+            .on_hover_text(command_line);
+
+            ui.add_space(ui::SPACE_16);
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.strong("启动时间");
+                    ui.add_space(4.0);
+                    ui.label(process.started_at.as_deref().unwrap_or("无法读取"));
+                });
+                ui.add_space(ui::SPACE_32);
+                ui.vertical(|ui| {
+                    ui.strong("父进程 PID");
+                    ui.add_space(4.0);
+                    if let Some(parent_pid) = process.parent_pid {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(parent_pid.to_string()).monospace().size(13.5));
+                            if ui::small_action_button(ui, "查看父进程 ➔").clicked() {
+                                actions.push(AppAction::InspectProcess { pid: parent_pid });
+                            }
+                        });
+                    } else {
+                        ui.label("无");
+                    }
+                });
+            });
         });
         ui.add_space(ui::SPACE_16);
         ui::card(ui, |ui| {
-            ui.label(RichText::new("启动来源").strong());
+            ui.label(
+                RichText::new("启动来源与父进程链 (Ancestor Chain)")
+                    .strong()
+                    .size(14.5),
+            );
             ui.add_space(ui::SPACE_8);
             if process.parent_chain.is_empty() {
-                ui.label("父进程关系不可用。");
+                ui.label(
+                    RichText::new("父进程已退出或关系不可用。")
+                        .color(ui.visuals().weak_text_color()),
+                );
             }
             for (index, ancestor) in process.parent_chain.iter().enumerate() {
                 render_related_process(ui, ancestor, index, actions);
@@ -338,10 +367,17 @@ impl ProcessInspectorTool {
         });
         ui.add_space(ui::SPACE_16);
         ui::card(ui, |ui| {
-            ui.label(RichText::new("直接子进程").strong());
+            ui.label(
+                RichText::new("直接子进程 (Child Processes)")
+                    .strong()
+                    .size(14.5),
+            );
             ui.add_space(ui::SPACE_8);
             if process.children.is_empty() {
-                ui.label("当前快照中没有直接子进程。");
+                ui.label(
+                    RichText::new("当前快照中没有检测到存活的直接子进程。")
+                        .color(ui.visuals().weak_text_color()),
+                );
             }
             for (index, child) in process.children.iter().enumerate() {
                 render_related_process(ui, child, 0, actions);
@@ -359,52 +395,72 @@ fn render_related_process(
     depth: usize,
     actions: &mut Vec<AppAction>,
 ) {
+    let palette = ui::palette_for_ui(ui);
     ui.horizontal(|ui| {
-        // 深层链最多缩进八级，其余层级仍通过顺序表达，避免把正文挤出可用宽度。
-        ui.add_space((depth.min(8) as f32) * 12.0);
+        // 深层链最多缩进八级
+        ui.add_space((depth.min(8) as f32) * 16.0);
         if depth > 0 {
-            ui.monospace("└─");
+            ui.colored_label(palette.weak, "↳");
         }
         ui.vertical(|ui| {
-            let label = format!("{}  (PID {})", process.name, process.pid);
-            let response = ui.add(
-                egui::Label::new(RichText::new(&label).color(ui::accent(ui)))
-                    .wrap()
-                    .sense(egui::Sense::click()),
-            );
-            response.clone().on_hover_text(&label);
-            if response.clicked() {
-                response.request_focus();
-            }
-            if response.has_focus() {
-                ui.painter().rect_stroke(
-                    response.rect.expand(2.0),
-                    egui::CornerRadius::same(4),
-                    egui::Stroke::new(1.5_f32, ui::accent(ui)),
-                    egui::StrokeKind::Middle,
+            ui.horizontal(|ui| {
+                let response = ui.add(
+                    egui::Label::new(RichText::new(&process.name).strong().color(ui::accent(ui)))
+                        .wrap()
+                        .sense(egui::Sense::click()),
                 );
-            }
-            if response.clicked()
-                || (response.has_focus()
-                    && ui.input(|input| {
-                        input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
-                    }))
-            {
-                actions.push(AppAction::InspectProcess { pid: process.pid });
-            }
+                response.clone().on_hover_text(format!(
+                    "点击查看进程详情：{} (PID {})",
+                    process.name, process.pid
+                ));
+                if response.clicked() {
+                    response.request_focus();
+                }
+                if response.has_focus() {
+                    ui.painter().rect_stroke(
+                        response.rect.expand(2.0),
+                        egui::CornerRadius::same(4),
+                        egui::Stroke::new(1.5_f32, ui::accent(ui)),
+                        egui::StrokeKind::Middle,
+                    );
+                }
+                if response.clicked()
+                    || (response.has_focus()
+                        && ui.input(|input| {
+                            input.key_pressed(egui::Key::Enter)
+                                || input.key_pressed(egui::Key::Space)
+                        }))
+                {
+                    actions.push(AppAction::InspectProcess { pid: process.pid });
+                }
+                ui::badge(
+                    ui,
+                    &format!("PID: {}", process.pid),
+                    palette.weak,
+                    palette.border_subtle,
+                );
+            });
             if let Some(path) = &process.exe_path {
-                ui.add(egui::Label::new(RichText::new(path).monospace().small()).wrap())
-                    .on_hover_text(path);
+                ui.add_space(1.0);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(path)
+                            .monospace()
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                    )
+                    .wrap(),
+                )
+                .on_hover_text(path);
+                ui.add_space(2.0);
                 ui.horizontal_wrapped(|ui| {
-                    if ui
-                        .small_button("复制路径")
+                    if ui::small_action_button(ui, "复制路径")
                         .on_hover_text("复制父进程可执行文件完整路径")
                         .clicked()
                     {
                         actions.push(AppAction::CopyText(path.clone()));
                     }
-                    if ui
-                        .small_button("打开所在位置")
+                    if ui::small_action_button(ui, "定位文件")
                         .on_hover_text("在资源管理器中选中父进程可执行文件")
                         .clicked()
                     {
@@ -412,7 +468,11 @@ fn render_related_process(
                     }
                 });
             } else {
-                ui.label(RichText::new("路径不可用").color(ui.visuals().weak_text_color()));
+                ui.label(
+                    RichText::new("路径不可用")
+                        .size(12.0)
+                        .color(ui.visuals().weak_text_color()),
+                );
             }
         });
     });

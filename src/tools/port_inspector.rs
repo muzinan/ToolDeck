@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eframe::egui::{self, Color32, RichText, TextEdit};
+use eframe::egui::{self, Color32, RichText};
 
 use crate::{
     core::{
@@ -105,17 +105,21 @@ impl ToolModule for PortInspectorTool {
 
     fn ui(&mut self, ui: &mut egui::Ui, _context: ToolUiContext) -> Vec<AppAction> {
         let mut actions = Vec::new();
-        heading(ui, "端口占用", "实时查看 TCP / UDP 端点和关联进程。");
+        heading(
+            ui,
+            "端口占用",
+            "实时查看 Windows 系统中的 TCP / UDP 监听端点、网络连接与所属进程。",
+        );
         ui.add_space(ui::SPACE_16);
         ui::card(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.add_sized(
-                    [210.0, 30.0],
-                    TextEdit::singleline(&mut self.filter).hint_text("搜索地址、进程或 PID"),
+                    [220.0, ui::CONTROL_HEIGHT],
+                    ui::text_input(&mut self.filter, "搜索地址、进程或 PID"),
                 );
                 ui.add_sized(
-                    [118.0, 30.0],
-                    TextEdit::singleline(&mut self.exact_port).hint_text("精确端口"),
+                    [110.0, ui::CONTROL_HEIGHT],
+                    ui::text_input(&mut self.exact_port, "精确端口"),
                 );
                 ui.separator();
                 egui::ComboBox::from_id_salt("port-protocol")
@@ -147,16 +151,34 @@ impl ToolModule for PortInspectorTool {
                             ui.selectable_value(&mut self.interval, interval, interval.label());
                         }
                     });
-                if ui::primary_button(ui, if self.busy { "再次刷新" } else { "刷新" }).clicked()
+                if ui::primary_button(
+                    ui,
+                    if self.busy {
+                        "重新查询"
+                    } else {
+                        "立即刷新"
+                    },
+                )
+                .clicked()
                 {
                     actions.push(AppAction::RefreshPorts);
                 }
             });
             if let Some(pid) = self.exact_pid {
                 ui.add_space(ui::SPACE_8);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(format!("精确 PID 筛选：{pid}"));
-                    if ui.small_button("清除").clicked() {
+                ui.horizontal(|ui| {
+                    let palette = ui::palette_for_ui(ui);
+                    ui::badge(
+                        ui,
+                        &format!("过滤 PID: {pid}"),
+                        palette.accent,
+                        palette.accent.gamma_multiply(if ui.visuals().dark_mode {
+                            0.22
+                        } else {
+                            0.12
+                        }),
+                    );
+                    if ui::small_action_button(ui, "清除过滤").clicked() {
                         self.exact_pid = None;
                     }
                 });
@@ -167,13 +189,19 @@ impl ToolModule for PortInspectorTool {
         if self.busy && self.endpoints.is_empty() {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("正在读取系统端口表...");
+                ui.label(
+                    RichText::new("正在通过 IP Helper 读取系统网络连接与端口表...").size(13.5),
+                );
             });
         }
         if let Some(error) = &self.error {
             error_state(ui, error);
         } else if self.endpoints.is_empty() && !self.busy {
-            empty_state(ui, "还没有端口数据", "点击刷新，或保持自动刷新开启。")
+            empty_state(
+                ui,
+                "暂未获取到端口数据",
+                "点击“立即刷新”，或开启定时自动刷新以持续监控。",
+            )
         } else {
             self.render_table(ui, &mut actions);
         }
@@ -266,26 +294,47 @@ impl PortInspectorTool {
         }
         sort_endpoints(&mut rows, self.sort_column, self.sort_ascending);
 
-        ui.horizontal_wrapped(|ui| {
+        let listening_count = rows
+            .iter()
+            .filter(|r| r.state == Some(TcpState::Listen))
+            .count();
+        let established_count = rows
+            .iter()
+            .filter(|r| r.state == Some(TcpState::Established))
+            .count();
+
+        ui.horizontal(|ui| {
             let refresh = self
                 .last_refresh_label
                 .as_deref()
-                .map_or_else(|| "尚未刷新".to_owned(), |time| format!("刷新于 {time}"));
+                .map_or_else(|| "尚未刷新".to_owned(), |time| format!("更新于 {time}"));
             ui.label(
-                RichText::new(format!("{} 个端点 · {refresh}", rows.len()))
-                    .color(ui.visuals().weak_text_color()),
+                RichText::new(format!(
+                    "共 {} 个端点 · 监听: {} · 已连接: {} · {}",
+                    rows.len(),
+                    listening_count,
+                    established_count,
+                    refresh
+                ))
+                .size(13.0)
+                .color(ui.visuals().weak_text_color()),
             );
-            if ui.small_button("复制 CSV").clicked() {
-                actions.push(AppAction::CopyText(endpoints_csv(&rows)));
-            }
-            if ui.small_button("导出 CSV").clicked() {
-                actions.push(AppAction::ExportPortsCsv {
-                    content: endpoints_csv(&rows),
-                });
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui::small_action_button(ui, "导出 CSV").clicked() {
+                    actions.push(AppAction::ExportPortsCsv {
+                        content: endpoints_csv(&rows),
+                    });
+                }
+                if ui::small_action_button(ui, "复制 CSV").clicked() {
+                    actions.push(AppAction::CopyText(endpoints_csv(&rows)));
+                }
+            });
         });
         if invalid_port {
-            ui.label(RichText::new("精确端口必须是 1 到 65535 的整数").color(ui::danger_text(ui)));
+            ui.add_space(ui::SPACE_4);
+            ui.label(
+                RichText::new("⚠ 精确端口必须是 1 到 65535 的整数").color(ui::danger_text(ui)),
+            );
         }
         ui.add_space(ui::SPACE_8);
         ui::card(ui, |ui| {
@@ -312,15 +361,24 @@ fn render_port_rows(
     sort_ascending: &mut bool,
 ) {
     const COLUMN_WIDTHS: [f32; 7] = [92.0, 290.0, 290.0, 112.0, 84.0, 220.0, 78.0];
-    const ROW_HEIGHT: f32 = 34.0;
+    const ROW_HEIGHT: f32 = 36.0;
     let table_width: f32 = COLUMN_WIDTHS.iter().sum();
     let header = allocate_table_row(ui, table_width, ROW_HEIGHT, egui::Sense::hover());
+    let palette = ui::palette_for_ui(ui);
     header.painter.rect_filled(
         header.response.rect,
         egui::CornerRadius::same(6),
         ui.visuals().faint_bg_color,
     );
-    let header_labels = ["协议", "本地", "远端", "状态", "PID", "进程", "操作"];
+    let header_labels = [
+        "协议",
+        "本地端点",
+        "远端端点",
+        "连接状态",
+        "PID",
+        "所属进程",
+        "操作",
+    ];
     for (index, label) in header_labels.iter().enumerate() {
         let column = match index {
             0 => SortColumn::Protocol,
@@ -363,9 +421,14 @@ fn render_port_rows(
             }
         }
         let marker = if *sort_column == column {
-            if *sort_ascending { " ↑" } else { " ↓" }
+            if *sort_ascending { " ▲" } else { " ▼" }
         } else {
             ""
+        };
+        let header_text_color = if *sort_column == column {
+            ui::accent(ui)
+        } else {
+            ui.visuals().text_color()
         };
         header
             .painter
@@ -374,8 +437,8 @@ fn render_port_rows(
                 cell_rect.left_center() + egui::vec2(8.0, 0.0),
                 egui::Align2::LEFT_CENTER,
                 format!("{label}{marker}"),
-                egui::FontId::proportional(14.0),
-                ui.visuals().text_color(),
+                egui::FontId::proportional(13.5),
+                header_text_color,
             );
     }
     header.painter.with_clip_rect(header.response.rect).text(
@@ -383,7 +446,7 @@ fn render_port_rows(
             + egui::vec2(8.0, 0.0),
         egui::Align2::LEFT_CENTER,
         "操作",
-        egui::FontId::proportional(14.0),
+        egui::FontId::proportional(13.5),
         ui.visuals().text_color(),
     );
 
@@ -403,41 +466,117 @@ fn render_port_rows(
         } else {
             &endpoint.process_name
         };
-        let cells = [
-            format!(
-                "{} {}",
-                endpoint.protocol.label(),
-                endpoint.ip_version.label()
-            ),
-            endpoint.local_display(),
-            endpoint.remote_display(),
-            endpoint
-                .state
-                .map(TcpState::label)
-                .unwrap_or("-")
-                .to_owned(),
-            endpoint.pid.to_string(),
-            process_name.to_owned(),
-        ];
-        paint_table_cells(
+        let proto_cell = format!(
+            "{} {}",
+            endpoint.protocol.label(),
+            endpoint.ip_version.label()
+        );
+        let local_cell = endpoint.local_display();
+        let remote_cell = endpoint.remote_display();
+        let pid_cell = endpoint.pid.to_string();
+
+        // 协议
+        paint_single_cell(
             &row.painter,
-            row.response.rect,
-            &COLUMN_WIDTHS[..5],
-            cells[..5].iter().map(String::as_str),
+            table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 0),
+            &proto_cell,
+            egui::FontId::monospace(12.5),
+            ui.visuals().text_color(),
+        );
+        // 本地端点
+        paint_single_cell(
+            &row.painter,
+            table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 1),
+            &local_cell,
             egui::FontId::monospace(13.0),
             ui.visuals().text_color(),
         );
+        // 远端端点
+        paint_single_cell(
+            &row.painter,
+            table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 2),
+            &remote_cell,
+            egui::FontId::monospace(13.0),
+            if remote_cell == "-" {
+                ui.visuals().weak_text_color()
+            } else {
+                ui.visuals().text_color()
+            },
+        );
+
+        // 状态徽标
+        let state_rect = table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 3);
+        let (state_text, fg_color, bg_color) = match endpoint.state {
+            Some(TcpState::Listen) => (
+                "LISTEN",
+                palette.success_text,
+                palette
+                    .success_text
+                    .gamma_multiply(if ui.visuals().dark_mode { 0.22 } else { 0.12 }),
+            ),
+            Some(TcpState::Established) => (
+                "ESTABLISHED",
+                palette.accent,
+                palette
+                    .accent
+                    .gamma_multiply(if ui.visuals().dark_mode { 0.22 } else { 0.12 }),
+            ),
+            Some(TcpState::CloseWait) | Some(TcpState::TimeWait) => (
+                "WAIT",
+                palette.warning_text,
+                palette
+                    .warning_text
+                    .gamma_multiply(if ui.visuals().dark_mode { 0.22 } else { 0.12 }),
+            ),
+            Some(state) => (state.label(), palette.weak, palette.border_subtle),
+            None => ("-", palette.weak, Color32::TRANSPARENT),
+        };
+        if state_text != "-" {
+            let chip_rect = egui::Rect::from_center_size(
+                state_rect.left_center() + egui::vec2(44.0, 0.0),
+                egui::vec2(84.0, 20.0),
+            );
+            row.painter
+                .rect_filled(chip_rect, egui::CornerRadius::same(10), bg_color);
+            row.painter.text(
+                chip_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                state_text,
+                egui::FontId::proportional(11.5),
+                fg_color,
+            );
+        } else {
+            paint_single_cell(
+                &row.painter,
+                state_rect,
+                "-",
+                egui::FontId::proportional(13.0),
+                palette.weak,
+            );
+        }
+
+        // PID
+        paint_single_cell(
+            &row.painter,
+            table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 4),
+            &pid_cell,
+            egui::FontId::monospace(13.0),
+            palette.weak,
+        );
+
+        // 进程名链接
         let process_rect = table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 5);
         let process_response = ui.interact(
             process_rect,
             ui.id().with(("port-process", index, endpoint.pid)),
             egui::Sense::click(),
         );
-        process_response
-            .clone()
-            .on_hover_text(format!("查看进程：{process_name}（PID {}）", endpoint.pid));
+        process_response.clone().on_hover_text(format!(
+            "点击查看进程详情：{process_name}（PID {}）",
+            endpoint.pid
+        ));
         let process_color = if process_response.hovered() {
-            ui::accent(ui).gamma_multiply(0.75)
+            palette.accent_hover
         } else {
             ui::accent(ui)
         };
@@ -455,8 +594,8 @@ fn render_port_rows(
         process_painter.text(
             process_rect.left_center() + egui::vec2(8.0, 0.0),
             egui::Align2::LEFT_CENTER,
-            &cells[5],
-            egui::FontId::proportional(14.0),
+            process_name,
+            egui::FontId::proportional(13.5),
             process_color,
         );
         if process_response.clicked() {
@@ -470,33 +609,44 @@ fn render_port_rows(
         {
             actions.push(AppAction::InvokeTool(ToolInvocation::process(endpoint.pid)));
         }
+
+        // 操作复制按钮
         let copy_rect = table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 6);
+        let copy_button_rect =
+            egui::Rect::from_center_size(copy_rect.center(), egui::vec2(48.0, 24.0));
         let copy_response = ui.interact(
-            copy_rect,
+            copy_button_rect,
             ui.id().with(("copy-port-row", index, endpoint.pid)),
             egui::Sense::click(),
         );
-        copy_response.clone().on_hover_text("复制这一行端点信息");
-        if copy_response.clicked() {
-            copy_response.request_focus();
-        }
+        copy_response.clone().on_hover_text("复制该端点记录");
+        let btn_fill = if copy_response.hovered() {
+            palette.secondary_button_hover
+        } else {
+            palette.secondary_button_bg
+        };
+        row.painter.rect(
+            copy_button_rect,
+            egui::CornerRadius::same(4),
+            btn_fill,
+            egui::Stroke::new(1.0_f32, palette.border_subtle),
+            egui::StrokeKind::Middle,
+        );
         if copy_response.has_focus() {
             row.painter.rect_stroke(
-                copy_rect.shrink(2.0),
+                copy_button_rect.shrink(1.0),
                 egui::CornerRadius::same(4),
                 egui::Stroke::new(1.5_f32, ui::accent(ui)),
                 egui::StrokeKind::Middle,
             );
         }
-        row.painter
-            .with_clip_rect(copy_rect.shrink2(egui::vec2(6.0, 2.0)))
-            .text(
-                copy_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "复制",
-                egui::FontId::proportional(14.0),
-                ui::accent(ui),
-            );
+        row.painter.text(
+            copy_button_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "复制",
+            egui::FontId::proportional(12.0),
+            palette.text,
+        );
         if copy_response.clicked()
             || (copy_response.has_focus()
                 && ui.input(|input| {
@@ -508,6 +658,24 @@ fn render_port_rows(
     }
 }
 
+fn paint_single_cell(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    text: &str,
+    font: egui::FontId,
+    color: Color32,
+) {
+    painter
+        .with_clip_rect(rect.shrink2(egui::vec2(6.0, 2.0)))
+        .text(
+            rect.left_center() + egui::vec2(8.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            text,
+            font,
+            color,
+        );
+}
+
 struct TableRow {
     response: egui::Response,
     painter: egui::Painter,
@@ -516,31 +684,6 @@ struct TableRow {
 fn allocate_table_row(ui: &mut egui::Ui, width: f32, height: f32, sense: egui::Sense) -> TableRow {
     let (response, painter) = ui.allocate_painter(egui::vec2(width, height), sense);
     TableRow { response, painter }
-}
-
-fn paint_table_cells<'a>(
-    painter: &egui::Painter,
-    row: egui::Rect,
-    column_widths: &[f32],
-    cells: impl IntoIterator<Item = &'a str>,
-    font: egui::FontId,
-    color: Color32,
-) {
-    let mut x = row.left();
-    for (width, text) in column_widths.iter().zip(cells) {
-        let cell_rect =
-            egui::Rect::from_min_size(egui::pos2(x, row.top()), egui::vec2(*width, row.height()));
-        painter
-            .with_clip_rect(cell_rect.shrink2(egui::vec2(6.0, 2.0)))
-            .text(
-                egui::pos2(x + 8.0, row.center().y),
-                egui::Align2::LEFT_CENTER,
-                text,
-                font.clone(),
-                color,
-            );
-        x += width;
-    }
 }
 
 fn table_cell_rect(row: egui::Rect, column_widths: &[f32], index: usize) -> egui::Rect {

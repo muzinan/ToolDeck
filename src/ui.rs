@@ -1,5 +1,5 @@
-//! Windows Toolbox 的共享视觉语言。
-//! 该模块负责 Windows 中文字体回退、浅深色主题令牌、通用状态组件和矢量图标；不参与工具业务逻辑。
+//! Windows Toolbox 的共享视觉语言与组件系统。
+//! 该模块负责 Windows 中文字体回退、主题令牌、标准化控件（输入框、各类按钮、徽标、卡片）与矢量图标。
 
 use std::{
     env, fs,
@@ -8,7 +8,7 @@ use std::{
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, Frame, Margin, RichText,
-    Stroke, Vec2,
+    Stroke, TextEdit, Vec2,
 };
 
 use crate::tools::ToolIcon;
@@ -20,7 +20,13 @@ pub const SPACE_4: f32 = 4.0;
 pub const SPACE_8: f32 = 8.0;
 pub const SPACE_12: f32 = 12.0;
 pub const SPACE_16: f32 = 16.0;
+pub const SPACE_20: f32 = 20.0;
 pub const SPACE_24: f32 = 24.0;
+pub const SPACE_32: f32 = 32.0;
+
+/// 标准控件高度规范
+pub const CONTROL_HEIGHT: f32 = 34.0;
+pub const COMPACT_CONTROL_HEIGHT: f32 = 26.0;
 
 /// 工具操作栏在窄窗口中的布局策略，避免输入与按钮互相挤压。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -29,77 +35,77 @@ pub enum ActionLayout {
     Vertical,
 }
 
-/// 主题调色板将可访问性关键颜色集中为可测试的数据，避免浅深主题出现隐式色值漂移。
+/// 主题调色板集中管理所有界面的色彩映射，确保对比度与可访问性。
 #[derive(Clone, Copy)]
-struct ThemePalette {
-    accent: Color32,
-    primary_button: Color32,
-    danger_button: Color32,
-    surface: Color32,
-    panel: Color32,
-    border: Color32,
-    text: Color32,
-    weak: Color32,
-    success_text: Color32,
-    danger_text: Color32,
-    hover: Color32,
+#[allow(dead_code)]
+pub struct ThemePalette {
+    pub accent: Color32,
+    pub accent_hover: Color32,
+    pub primary_button: Color32,
+    pub primary_button_hover: Color32,
+    pub secondary_button_bg: Color32,
+    pub secondary_button_hover: Color32,
+    pub danger_button: Color32,
+    pub danger_button_hover: Color32,
+    pub surface: Color32,
+    pub surface_elevated: Color32,
+    pub panel: Color32,
+    pub border: Color32,
+    pub border_subtle: Color32,
+    pub text: Color32,
+    pub weak: Color32,
+    pub success_text: Color32,
+    pub danger_text: Color32,
+    pub warning_text: Color32,
+    pub hover: Color32,
 }
 
-fn theme_palette(theme: egui::Theme) -> ThemePalette {
+pub fn theme_palette(theme: egui::Theme) -> ThemePalette {
     let dark = theme == egui::Theme::Dark;
-    ThemePalette {
-        accent: if dark {
-            Color32::from_rgb(91, 140, 255)
-        } else {
-            Color32::from_rgb(37, 99, 235)
-        },
-        // 深色主题的强调色用于链接和焦点；主按钮单独加深以保证白字达到 AA 对比度。
-        primary_button: if dark {
-            Color32::from_rgb(52, 99, 204)
-        } else {
-            Color32::from_rgb(37, 99, 235)
-        },
-        danger_button: Color32::from_rgb(180, 35, 24),
-        surface: if dark {
-            Color32::from_rgb(21, 29, 43)
-        } else {
-            Color32::WHITE
-        },
-        panel: if dark {
-            Color32::from_rgb(14, 20, 31)
-        } else {
-            Color32::from_rgb(242, 246, 252)
-        },
-        border: if dark {
-            Color32::from_rgb(50, 64, 85)
-        } else {
-            Color32::from_rgb(214, 224, 238)
-        },
-        text: if dark {
-            Color32::from_rgb(232, 238, 249)
-        } else {
-            Color32::from_rgb(25, 35, 52)
-        },
-        weak: if dark {
-            Color32::from_rgb(164, 178, 199)
-        } else {
-            Color32::from_rgb(90, 107, 132)
-        },
-        success_text: if dark {
-            Color32::from_rgb(110, 231, 183)
-        } else {
-            Color32::from_rgb(20, 108, 67)
-        },
-        danger_text: if dark {
-            Color32::from_rgb(253, 164, 175)
-        } else {
-            Color32::from_rgb(180, 35, 24)
-        },
-        hover: if dark {
-            Color32::from_rgb(36, 52, 78)
-        } else {
-            Color32::from_rgb(232, 241, 255)
-        },
+    if dark {
+        ThemePalette {
+            accent: Color32::from_rgb(91, 140, 255),
+            accent_hover: Color32::from_rgb(120, 162, 255),
+            primary_button: Color32::from_rgb(52, 99, 204),
+            primary_button_hover: Color32::from_rgb(68, 118, 230),
+            secondary_button_bg: Color32::from_rgb(32, 39, 54),
+            secondary_button_hover: Color32::from_rgb(42, 52, 72),
+            danger_button: Color32::from_rgb(180, 35, 24),
+            danger_button_hover: Color32::from_rgb(205, 45, 34),
+            surface: Color32::from_rgb(21, 27, 39),
+            surface_elevated: Color32::from_rgb(28, 36, 52),
+            panel: Color32::from_rgb(13, 17, 25),
+            border: Color32::from_rgb(46, 58, 78),
+            border_subtle: Color32::from_rgb(34, 44, 60),
+            text: Color32::from_rgb(238, 242, 250),
+            weak: Color32::from_rgb(164, 178, 199),
+            success_text: Color32::from_rgb(110, 231, 183),
+            danger_text: Color32::from_rgb(253, 164, 175),
+            warning_text: Color32::from_rgb(251, 191, 36),
+            hover: Color32::from_rgb(34, 46, 68),
+        }
+    } else {
+        ThemePalette {
+            accent: Color32::from_rgb(37, 99, 235),
+            accent_hover: Color32::from_rgb(29, 78, 216),
+            primary_button: Color32::from_rgb(37, 99, 235),
+            primary_button_hover: Color32::from_rgb(29, 78, 216),
+            secondary_button_bg: Color32::from_rgb(243, 246, 251),
+            secondary_button_hover: Color32::from_rgb(232, 239, 248),
+            danger_button: Color32::from_rgb(180, 35, 24),
+            danger_button_hover: Color32::from_rgb(153, 27, 18),
+            surface: Color32::WHITE,
+            surface_elevated: Color32::from_rgb(249, 251, 254),
+            panel: Color32::from_rgb(243, 246, 251),
+            border: Color32::from_rgb(214, 224, 238),
+            border_subtle: Color32::from_rgb(230, 237, 247),
+            text: Color32::from_rgb(25, 35, 52),
+            weak: Color32::from_rgb(90, 107, 132),
+            success_text: Color32::from_rgb(20, 108, 67),
+            danger_text: Color32::from_rgb(180, 35, 24),
+            warning_text: Color32::from_rgb(180, 83, 9),
+            hover: Color32::from_rgb(232, 241, 255),
+        }
     }
 }
 
@@ -146,7 +152,6 @@ pub fn install_windows_fonts(context: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     let font_name = "windows-chinese-ui".to_owned();
     let mut font_data = FontData::from_owned(bytes);
-    // TTC 字体集合选择第一个字体面；单字体文件的索引同样为 0。
     font_data.index = 0;
     fonts.font_data.insert(font_name.clone(), font_data.into());
     fonts
@@ -176,10 +181,14 @@ fn configure_style(style: &mut egui::Style, theme: egui::Theme) {
     let palette = theme_palette(theme);
 
     style.spacing.item_spacing = Vec2::new(SPACE_8, SPACE_8);
-    style.spacing.button_padding = Vec2::new(SPACE_12, SPACE_8);
+    style.spacing.button_padding = Vec2::new(SPACE_12, 7.0);
     style.spacing.window_margin = Margin::same(SPACE_16 as i8);
     style.spacing.menu_margin = Margin::same(SPACE_8 as i8);
-    style.spacing.interact_size = Vec2::new(40.0, 34.0);
+    style.spacing.interact_size = Vec2::new(40.0, CONTROL_HEIGHT);
+
+    style
+        .text_styles
+        .insert(egui::TextStyle::Heading, egui::FontId::proportional(20.0));
     style
         .text_styles
         .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
@@ -188,7 +197,11 @@ fn configure_style(style: &mut egui::Style, theme: egui::Theme) {
         .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
     style
         .text_styles
+        .insert(egui::TextStyle::Monospace, egui::FontId::monospace(13.0));
+    style
+        .text_styles
         .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
+
     style.visuals = if dark {
         egui::Visuals::dark()
     } else {
@@ -198,12 +211,12 @@ fn configure_style(style: &mut egui::Style, theme: egui::Theme) {
     style.visuals.window_fill = palette.surface;
     style.visuals.extreme_bg_color = palette.surface;
     style.visuals.faint_bg_color = if dark {
-        Color32::from_rgb(26, 37, 54)
+        Color32::from_rgb(26, 34, 48)
     } else {
-        Color32::from_rgb(247, 249, 253)
+        Color32::from_rgb(246, 249, 253)
     };
     style.visuals.code_bg_color = if dark {
-        Color32::from_rgb(25, 35, 52)
+        Color32::from_rgb(28, 36, 52)
     } else {
         Color32::from_rgb(238, 243, 250)
     };
@@ -211,29 +224,35 @@ fn configure_style(style: &mut egui::Style, theme: egui::Theme) {
     style.visuals.widgets.noninteractive.bg_fill = palette.surface;
     style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, palette.border);
     style.visuals.widgets.noninteractive.fg_stroke.color = palette.text;
+    style.visuals.widgets.noninteractive.corner_radius = CornerRadius::same(6);
+
     style.visuals.widgets.inactive.bg_fill = palette.surface;
     style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, palette.border);
     style.visuals.widgets.inactive.fg_stroke.color = palette.text;
+    style.visuals.widgets.inactive.corner_radius = CornerRadius::same(6);
+
     style.visuals.widgets.hovered.bg_fill = palette.hover;
-    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.5_f32, palette.accent);
+    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.2_f32, palette.accent);
     style.visuals.widgets.hovered.fg_stroke.color = palette.text;
+    style.visuals.widgets.hovered.corner_radius = CornerRadius::same(6);
+
     style.visuals.widgets.active.bg_fill = palette.hover;
-    style.visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, palette.accent);
+    style.visuals.widgets.active.bg_stroke = Stroke::new(1.5_f32, palette.accent);
     style.visuals.widgets.active.fg_stroke.color = palette.text;
+    style.visuals.widgets.active.corner_radius = CornerRadius::same(6);
+
     style.visuals.widgets.open.bg_fill = palette.hover;
-    style.visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, palette.accent);
+    style.visuals.widgets.open.bg_stroke = Stroke::new(1.2_f32, palette.accent);
+    style.visuals.widgets.open.corner_radius = CornerRadius::same(6);
+
     style.visuals.selection.bg_fill = palette
         .accent
-        .gamma_multiply(if dark { 0.45 } else { 0.22 });
+        .gamma_multiply(if dark { 0.40 } else { 0.20 });
     style.visuals.selection.stroke = Stroke::new(1.0_f32, palette.accent);
     style.visuals.hyperlink_color = palette.accent;
     style.visuals.weak_text_color = Some(palette.weak);
-    style.visuals.window_corner_radius = CornerRadius::same(12);
+    style.visuals.window_corner_radius = CornerRadius::same(10);
     style.visuals.menu_corner_radius = CornerRadius::same(8);
-    style.visuals.widgets.inactive.corner_radius = CornerRadius::same(6);
-    style.visuals.widgets.hovered.corner_radius = CornerRadius::same(6);
-    style.visuals.widgets.active.corner_radius = CornerRadius::same(6);
-    style.visuals.widgets.open.corner_radius = CornerRadius::same(6);
 }
 
 /// 当前主题的强调色。
@@ -241,16 +260,7 @@ pub fn accent(ui: &egui::Ui) -> Color32 {
     ui.visuals().hyperlink_color
 }
 
-fn primary_button_fill(ui: &egui::Ui) -> Color32 {
-    let theme = if ui.visuals().dark_mode {
-        egui::Theme::Dark
-    } else {
-        egui::Theme::Light
-    };
-    theme_palette(theme).primary_button
-}
-
-fn palette_for_ui(ui: &egui::Ui) -> ThemePalette {
+pub fn palette_for_ui(ui: &egui::Ui) -> ThemePalette {
     theme_palette(if ui.visuals().dark_mode {
         egui::Theme::Dark
     } else {
@@ -268,14 +278,20 @@ pub fn danger_text(ui: &egui::Ui) -> Color32 {
     palette_for_ui(ui).danger_text
 }
 
+/// 返回当前主题中可在页面与卡片背景上阅读的警告状态文字色。
+#[allow(dead_code)]
+pub fn warning_text(ui: &egui::Ui) -> Color32 {
+    palette_for_ui(ui).warning_text
+}
+
 /// 页面标题与说明，统一所有工具页面的信息层级。
 pub fn page_heading(ui: &mut egui::Ui, title: &str, subtitle: &str) {
-    ui.label(RichText::new(title).size(26.0).strong());
-    ui.add_space(SPACE_4);
+    ui.label(RichText::new(title).size(24.0).strong());
+    ui.add_space(2.0);
     ui.label(RichText::new(subtitle).color(ui.visuals().weak_text_color()));
 }
 
-/// 绘制服从父布局宽度的页面级信息卡片。
+/// 绘制标准卡片容器，具有统一的圆角、背景与浅色边框。
 pub fn card(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
     let frame = Frame::new()
         .fill(ui.visuals().window_fill)
@@ -283,6 +299,18 @@ pub fn card(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
             1.0_f32,
             ui.visuals().widgets.inactive.bg_stroke.color,
         ))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::same(SPACE_16 as i8));
+    frame.show(ui, add_contents);
+}
+
+/// 绘制高亮/重点卡片，带有微弱的主题背景色。
+#[allow(dead_code)]
+pub fn elevated_card(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    let palette = palette_for_ui(ui);
+    let frame = Frame::new()
+        .fill(palette.surface_elevated)
+        .stroke(Stroke::new(1.0_f32, palette.border))
         .corner_radius(CornerRadius::same(8))
         .inner_margin(Margin::same(SPACE_16 as i8));
     frame.show(ui, add_contents);
@@ -297,47 +325,146 @@ pub fn compact_card(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui))
             ui.visuals().widgets.inactive.bg_stroke.color,
         ))
         .corner_radius(CornerRadius::same(8))
-        .inner_margin(Margin::same(SPACE_16 as i8));
+        .inner_margin(Margin::symmetric(SPACE_16 as i8, SPACE_12 as i8));
     frame.show(ui, add_contents);
 }
 
+/// 状态指示卡片。
 pub fn state_card(ui: &mut egui::Ui, title: &str, detail: &str, color: Color32) {
     card(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.colored_label(color, "●");
+            let (response, painter) = ui.allocate_painter(Vec2::splat(18.0), egui::Sense::hover());
+            painter.circle_filled(response.rect.center(), 5.0, color);
+            ui.add_space(SPACE_4);
             ui.vertical(|ui| {
-                ui.label(RichText::new(title).strong());
-                ui.add_space(SPACE_4);
-                ui.label(RichText::new(detail).color(ui.visuals().weak_text_color()));
+                ui.label(RichText::new(title).strong().size(14.0));
+                if !detail.is_empty() {
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new(detail)
+                            .size(13.0)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                }
             });
         });
     });
 }
 
+/// 统一创建垂直居中、边距优雅的单行输入框组件。
+pub fn text_input<'a>(text: &'a mut String, hint: &'a str) -> TextEdit<'a> {
+    TextEdit::singleline(text)
+        .hint_text(hint)
+        .margin(Margin::symmetric(10, 7))
+        .font(egui::TextStyle::Body)
+}
+
+/// 标准主按钮（高亮强调色填充，白字，统一圆角）。
 pub fn primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let palette = palette_for_ui(ui);
     let button = egui::Button::new(RichText::new(text).color(Color32::WHITE).strong())
-        .fill(primary_button_fill(ui))
-        .stroke(Stroke::NONE);
+        .fill(palette.primary_button)
+        .stroke(Stroke::NONE)
+        .corner_radius(CornerRadius::same(6))
+        .min_size(Vec2::new(0.0, CONTROL_HEIGHT));
     ui.add(button)
 }
 
-/// 在响应式操作栏中按预留尺寸绘制主按钮，颜色与普通主按钮保持一致。
+/// 定制尺寸的标准主按钮。
 pub fn primary_button_sized(ui: &mut egui::Ui, text: &str, size: [f32; 2]) -> egui::Response {
+    let palette = palette_for_ui(ui);
     let button = egui::Button::new(RichText::new(text).color(Color32::WHITE).strong())
-        .fill(primary_button_fill(ui))
-        .stroke(Stroke::NONE);
+        .fill(palette.primary_button)
+        .stroke(Stroke::NONE)
+        .corner_radius(CornerRadius::same(6));
     ui.add_sized(size, button)
 }
 
+/// 次级按钮（带描边与柔和背景，用于平级操作如“选择文件”、“清除”等）。
+pub fn secondary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let palette = palette_for_ui(ui);
+    let button = egui::Button::new(RichText::new(text).color(palette.text))
+        .fill(palette.secondary_button_bg)
+        .stroke(Stroke::new(1.0_f32, palette.border))
+        .corner_radius(CornerRadius::same(6))
+        .min_size(Vec2::new(0.0, CONTROL_HEIGHT));
+    ui.add(button)
+}
+
+/// 定制尺寸的次级按钮。
+pub fn secondary_button_sized(ui: &mut egui::Ui, text: &str, size: [f32; 2]) -> egui::Response {
+    let palette = palette_for_ui(ui);
+    let button = egui::Button::new(RichText::new(text).color(palette.text))
+        .fill(palette.secondary_button_bg)
+        .stroke(Stroke::new(1.0_f32, palette.border))
+        .corner_radius(CornerRadius::same(6));
+    ui.add_sized(size, button)
+}
+
+/// 危险按钮（红色警示，白字，用于“结束进程”等操作）。
 pub fn danger_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    ui.add(
-        egui::Button::new(RichText::new(text).color(Color32::WHITE).strong())
-            .fill(palette_for_ui(ui).danger_button)
-            .stroke(Stroke::NONE),
-    )
+    let palette = palette_for_ui(ui);
+    let button = egui::Button::new(RichText::new(text).color(Color32::WHITE).strong())
+        .fill(palette.danger_button)
+        .stroke(Stroke::NONE)
+        .corner_radius(CornerRadius::same(6))
+        .min_size(Vec2::new(0.0, CONTROL_HEIGHT));
+    ui.add(button)
+}
+
+/// 定制尺寸的危险按钮。
+#[allow(dead_code)]
+pub fn danger_button_sized(ui: &mut egui::Ui, text: &str, size: [f32; 2]) -> egui::Response {
+    let palette = palette_for_ui(ui);
+    let button = egui::Button::new(RichText::new(text).color(Color32::WHITE).strong())
+        .fill(palette.danger_button)
+        .stroke(Stroke::NONE)
+        .corner_radius(CornerRadius::same(6));
+    ui.add_sized(size, button)
+}
+
+/// 紧凑操作小按钮（用于表格行内、卡片内“复制”、“打开所在位置”等操作）。
+pub fn small_action_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let palette = palette_for_ui(ui);
+    let button = egui::Button::new(RichText::new(text).size(12.5).color(palette.text))
+        .fill(palette.secondary_button_bg)
+        .stroke(Stroke::new(1.0_f32, palette.border_subtle))
+        .corner_radius(CornerRadius::same(5))
+        .min_size(Vec2::new(0.0, COMPACT_CONTROL_HEIGHT));
+    ui.add(button)
+}
+
+/// 状态徽标 / 胶囊标签（用于协议 TCP/UDP、状态 LISTENING/ESTABLISHED、PID 标签等）。
+pub fn badge(ui: &mut egui::Ui, text: &str, fg: Color32, bg: Color32) -> egui::Response {
+    let font_id = egui::FontId::proportional(12.0);
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), font_id, fg);
+    let size = Vec2::new(galley.size().x + 14.0, 22.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::same(11), bg);
+    painter.galley(
+        rect.left_center() + Vec2::new(7.0, -galley.size().y * 0.5),
+        galley,
+        fg,
+    );
+    response
+}
+
+/// 现代图标徽章容器，绘制带彩色底色的图标。
+pub fn icon_badge(
+    ui: &mut egui::Ui,
+    icon: ToolIcon,
+    size: f32,
+    icon_color: Color32,
+    bg_color: Color32,
+) {
+    let (response, painter) = ui.allocate_painter(Vec2::splat(size), egui::Sense::hover());
+    painter.rect_filled(response.rect, CornerRadius::same(8), bg_color);
+    paint_tool_icon(&painter, response.rect, icon, icon_color);
 }
 
 /// 在固定方形区域内绘制一致的线性工具图标。
+#[allow(dead_code)]
 pub fn tool_icon(ui: &mut egui::Ui, icon: ToolIcon, size: f32, color: Color32) -> egui::Response {
     let (response, painter) = ui.allocate_painter(Vec2::splat(size), egui::Sense::hover());
     paint_tool_icon(&painter, response.rect, icon, color);
@@ -353,12 +480,12 @@ pub fn paint_tool_icon(
 ) {
     let size = bounds.width().min(bounds.height());
     let rect = egui::Rect::from_center_size(bounds.center(), Vec2::splat(size * 0.60));
-    let stroke = Stroke::new((size * 0.075).max(1.2), color);
+    let stroke = Stroke::new((size * 0.075).max(1.3), color);
     match icon {
         ToolIcon::FileLock => {
             painter.rect_stroke(
                 rect,
-                CornerRadius::same(2),
+                CornerRadius::same(3),
                 stroke,
                 egui::StrokeKind::Middle,
             );
@@ -396,9 +523,9 @@ pub fn paint_tool_icon(
             ];
             for point in points {
                 painter.line_segment([center, point], stroke);
-                painter.circle_filled(point, size * 0.07, color);
+                painter.circle_filled(point, size * 0.075, color);
             }
-            painter.circle_filled(center, size * 0.09, color);
+            painter.circle_filled(center, size * 0.095, color);
         }
         ToolIcon::Process => {
             let top = rect.center_top() + Vec2::new(0.0, size * 0.08);

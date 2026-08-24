@@ -159,25 +159,41 @@ impl ToolboxApp {
 
         egui::SidePanel::left("toolbox-sidebar")
             .resizable(false)
-            .default_width(248.0)
-            .min_width(248.0)
+            .default_width(256.0)
+            .min_width(256.0)
             .show(context, |ui| {
                 ui.add_space(ui::SPACE_16);
                 ui.horizontal(|ui| {
-                    ui::tool_icon(ui, crate::tools::ToolIcon::Process, 30.0, ui::accent(ui));
+                    let palette = ui::palette_for_ui(ui);
+                    let bg_color = palette.accent.gamma_multiply(if ui.visuals().dark_mode {
+                        0.20
+                    } else {
+                        0.12
+                    });
+                    ui::icon_badge(
+                        ui,
+                        crate::tools::ToolIcon::Process,
+                        36.0,
+                        palette.accent,
+                        bg_color,
+                    );
+                    ui.add_space(ui::SPACE_4);
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("Windows Toolbox").strong().size(17.0));
+                        ui.label(RichText::new("Windows Toolbox").strong().size(16.0));
+                        ui.add_space(1.0);
                         ui.label(
-                            RichText::new("系统诊断工具集")
+                            RichText::new("系统诊断与实用工具")
                                 .size(12.0)
                                 .color(ui.visuals().weak_text_color()),
                         );
                     });
                 });
                 ui.add_space(ui::SPACE_16);
+
+                let search_width = ui.available_width();
                 ui.add_sized(
-                    [ui.available_width(), 34.0],
-                    egui::TextEdit::singleline(&mut self.search).hint_text("搜索工具"),
+                    [search_width, ui::CONTROL_HEIGHT],
+                    ui::text_input(&mut self.search, "搜索工具..."),
                 );
                 ui.add_space(ui::SPACE_16);
 
@@ -185,7 +201,11 @@ impl ToolboxApp {
                     nav_section_label(ui, "搜索结果");
                     ui.add_space(ui::SPACE_4);
                     if descriptors.is_empty() {
-                        ui.small("没有匹配的工具");
+                        ui.label(
+                            RichText::new("没有匹配的工具")
+                                .size(13.0)
+                                .color(ui.visuals().weak_text_color()),
+                        );
                     }
                     for descriptor in descriptors {
                         if tool_nav_button(
@@ -197,7 +217,7 @@ impl ToolboxApp {
                         }
                     }
                 } else {
-                    if nav_text_button(ui, "常用工具", self.page == Page::Home) {
+                    if nav_text_button(ui, "常用与收藏", self.page == Page::Home) {
                         actions.push(AppAction::NavigateTo("home".into()));
                     }
                     let favorites: Vec<_> = self
@@ -212,8 +232,8 @@ impl ToolboxApp {
                         })
                         .collect();
                     if !favorites.is_empty() {
-                        ui.add_space(ui::SPACE_16);
-                        nav_section_label(ui, "收藏");
+                        ui.add_space(ui::SPACE_12);
+                        nav_section_label(ui, "我的收藏");
                         ui.add_space(ui::SPACE_4);
                         for descriptor in favorites {
                             if tool_nav_button(
@@ -243,8 +263,9 @@ impl ToolboxApp {
                 }
 
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                    ui.add_space(ui::SPACE_8);
                     ui.separator();
-                    ui.add_space(ui::SPACE_4);
+                    ui.add_space(ui::SPACE_8);
                     if nav_text_button(ui, "关于", self.page == Page::About) {
                         actions.push(AppAction::NavigateTo("about".into()));
                     }
@@ -288,8 +309,8 @@ impl ToolboxApp {
 
     fn render_home(&self, ui: &mut egui::Ui) -> Vec<AppAction> {
         let mut actions = Vec::new();
-        ui::page_heading(ui, "常用工具", "快速进入常用的系统诊断工具。");
-        ui.add_space(ui::SPACE_24);
+        ui::page_heading(ui, "常用工具", "快速进入常用的系统与网络诊断工具。");
+        ui.add_space(ui::SPACE_20);
         let descriptors = self.registry.descriptors();
         if ui.available_width() >= 728.0 {
             ui.columns(2, |columns| {
@@ -333,36 +354,43 @@ impl ToolboxApp {
                 ui.add_space(ui::SPACE_12);
             }
         }
-        ui.add_space(32.0);
+        ui.add_space(ui::SPACE_24);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("最近使用").strong());
-            if !self.settings.recent_tools.is_empty() && ui.small_button("清除").clicked() {
+            ui.label(RichText::new("最近使用").strong().size(15.0));
+            if !self.settings.recent_tools.is_empty()
+                && ui::small_action_button(ui, "清空").clicked()
+            {
                 actions.push(AppAction::ClearRecents);
             }
         });
         ui.add_space(ui::SPACE_8);
         if self.settings.recent_tools.is_empty() {
             ui.label(
-                RichText::new("最近打开的工具会显示在这里。").color(ui.visuals().weak_text_color()),
+                RichText::new("最近打开的工具会显示在这里。")
+                    .size(13.0)
+                    .color(ui.visuals().weak_text_color()),
             );
         } else {
-            for id in &self.settings.recent_tools {
-                if let Some(descriptor) = descriptors.iter().find(|descriptor| descriptor.id == id)
-                    && ui.link(descriptor.name).clicked()
-                {
-                    actions.push(AppAction::NavigateTo(descriptor.id.into()));
+            ui.horizontal_wrapped(|ui| {
+                for id in &self.settings.recent_tools {
+                    if let Some(descriptor) =
+                        descriptors.iter().find(|descriptor| descriptor.id == id)
+                        && ui::secondary_button(ui, descriptor.name).clicked()
+                    {
+                        actions.push(AppAction::NavigateTo(descriptor.id.into()));
+                    }
                 }
-            }
+            });
         }
         actions
     }
 
     fn render_settings(&mut self, ui: &mut egui::Ui) -> Vec<AppAction> {
         let mut actions = Vec::new();
-        ui::page_heading(ui, "设置", "设置仅保存在当前 Windows 用户的本地配置目录。");
-        ui.add_space(ui::SPACE_24);
+        ui::page_heading(ui, "设置", "应用配置保存在当前 Windows 用户的本地目录。");
+        ui.add_space(ui::SPACE_20);
         ui::card(ui, |ui| {
-            ui.label(RichText::new("外观").strong());
+            ui.label(RichText::new("界面外观").strong().size(15.0));
             ui.add_space(ui::SPACE_8);
             let before_theme = self.settings.theme;
             egui::ComboBox::from_id_salt("theme-preference")
@@ -383,11 +411,14 @@ impl ToolboxApp {
         });
         ui.add_space(ui::SPACE_16);
         ui::card(ui, |ui| {
-            ui.label(RichText::new("资源管理器右键菜单").strong());
+            ui.label(RichText::new("资源管理器右键菜单").strong().size(15.0));
+            ui.add_space(2.0);
             ui.label(
-                RichText::new("在文件右键菜单中提供“Windows Toolbox -> 查看文件占用”。")
+                RichText::new("在 Windows 文件右键菜单中提供“Windows Toolbox -> 查看文件占用”。")
+                    .size(13.0)
                     .color(ui.visuals().weak_text_color()),
             );
+            ui.add_space(ui::SPACE_8);
             let registered = shell_context_menu::is_context_menu_registered();
             ui.horizontal(|ui| {
                 let mut enabled = registered;
@@ -397,35 +428,41 @@ impl ToolboxApp {
                 {
                     actions.push(AppAction::ToggleContextMenu { enabled });
                 }
-                ui.label(if registered {
-                    "状态：已注册"
+                let palette = ui::palette_for_ui(ui);
+                if registered {
+                    ui::badge(
+                        ui,
+                        "已注册",
+                        palette.success_text,
+                        palette.success_text.gamma_multiply(0.15),
+                    );
                 } else {
-                    "状态：未注册"
-                });
+                    ui::badge(ui, "未注册", palette.weak, palette.border_subtle);
+                }
             });
+            ui.add_space(ui::SPACE_8);
             ui.horizontal(|ui| {
                 if ui::primary_button(ui, "重新注册").clicked() {
                     actions.push(AppAction::ToggleContextMenu { enabled: true });
                 }
-                if ui
-                    .add_enabled(registered, egui::Button::new("移除"))
-                    .clicked()
-                {
+                if registered && ui::secondary_button(ui, "移除菜单").clicked() {
                     actions.push(AppAction::ToggleContextMenu { enabled: false });
                 }
             });
         });
         ui.add_space(ui::SPACE_16);
         ui::card(ui, |ui| {
-            ui.label(RichText::new("诊断").strong());
+            ui.label(RichText::new("诊断与日志").strong().size(15.0));
+            ui.add_space(2.0);
             ui.label(
-                RichText::new("启动失败日志保存在本地配置目录，最多保留三份。")
+                RichText::new("运行与启动日志保存在本地配置目录，最多保留三份。")
+                    .size(13.0)
                     .color(ui.visuals().weak_text_color()),
             );
+            ui.add_space(ui::SPACE_8);
             let directory = crate::diagnostics::diagnostic_directory();
-            if ui
-                .add_enabled(directory.is_some(), egui::Button::new("打开诊断目录"))
-                .clicked()
+            if directory.is_some()
+                && ui::secondary_button(ui, "打开诊断日志目录").clicked()
                 && let Some(directory) = directory
             {
                 actions.push(AppAction::OpenDirectory(directory));
@@ -438,23 +475,24 @@ impl ToolboxApp {
         ui::page_heading(
             ui,
             "关于 Windows Toolbox",
-            "V0.2.0 · Windows 原生系统诊断工具集",
+            "V0.2.0 · 原生高性能 Windows 系统诊断与工具集",
         );
-        ui.add_space(ui::SPACE_24);
+        ui.add_space(ui::SPACE_20);
         ui::card(ui, |ui| {
-            ui.label("Windows Toolbox 面向 Windows 用户和开发者，提供常用系统状态诊断能力。");
-            ui.add_space(ui::SPACE_12);
-            ui.label(RichText::new("当前内建工具").strong());
+            ui.label("Windows Toolbox 基于 Rust 和 egui 开发，提供原生、高效、无冗余依赖的系统状态诊断能力。");
+            ui.add_space(ui::SPACE_16);
+            ui.label(RichText::new("当前内建工具").strong().size(15.0));
             ui.add_space(ui::SPACE_8);
-            ui.label("文件占用 · 通过 Restart Manager 查看锁定文件的进程");
-            ui.label("端口占用 · 通过 IP Helper 查看 TCP / UDP 端点");
-            ui.label("进程关系 · 通过 Toolhelp 查看父进程链、直接子进程与基础详情");
-            ui.label("DNS 查询 · 系统 DNS 记录解析");
-            ui.label("Ping · 主机响应与延迟测试");
-            ui.label("TCP 端口测试 · TCP 握手与地址族诊断");
+            ui.label("• 文件占用 · 通过 Windows Restart Manager 查找锁定文件的进程");
+            ui.label("• 端口占用 · 通过 Windows IP Helper API 实时列出 TCP / UDP 监听与连接");
+            ui.label("• 进程关系 · 通过 Toolhelp 快照解析完整父进程链与子进程详情");
+            ui.label("• DNS 查询 · 原生解析 A / AAAA / CNAME / MX / TXT / NS / PTR 记录");
+            ui.label("• Ping · 真实 ICMP 往返延迟与丢包率测试");
+            ui.label("• TCP 端口测试 · 无侵入式 TCP 三次握手连通性与时延测试");
             ui.add_space(ui::SPACE_16);
             ui.label(
-                RichText::new("默认以普通用户权限运行；受限进程的路径或操作可能需要管理员权限。")
+                RichText::new("提示：默认以当前用户权限运行；查询受保护的系统进程或核心服务可能需要以管理员身份运行。")
+                    .size(12.5)
                     .color(ui.visuals().weak_text_color()),
             );
         });
@@ -620,17 +658,45 @@ impl ToolboxApp {
             .resizable(false)
             .open(&mut open)
             .show(context, |ui| {
-                ui.label(RichText::new("确定要结束以下进程吗？").strong());
-                ui.add_space(8.0);
-                ui.label(format!("{}  (PID {})", process.name, process.pid));
-                ui.add_space(8.0);
-                ui.label(RichText::new("这可能导致未保存的数据丢失。").color(ui::danger_text(ui)));
-                ui.add_space(14.0);
                 ui.horizontal(|ui| {
-                    if ui.button("取消").clicked() {
+                    ui.colored_label(ui::danger_text(ui), "⚠");
+                    ui.label(
+                        RichText::new("确定要强制结束该进程吗？")
+                            .strong()
+                            .size(15.0),
+                    );
+                });
+                ui.add_space(ui::SPACE_8);
+                ui::card(ui, |ui| {
+                    ui.label(RichText::new(&process.name).strong().size(14.0));
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new(format!("PID: {}", process.pid))
+                            .monospace()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    if let Some(path) = &process.exe_path {
+                        ui.add_space(2.0);
+                        ui.label(
+                            RichText::new(path)
+                                .monospace()
+                                .small()
+                                .color(ui.visuals().weak_text_color()),
+                        );
+                    }
+                });
+                ui.add_space(ui::SPACE_8);
+                ui.label(
+                    RichText::new("强制结束进程可能导致未保存的工作丢失或依赖服务异常。")
+                        .size(12.5)
+                        .color(ui::danger_text(ui)),
+                );
+                ui.add_space(ui::SPACE_16);
+                ui.horizontal(|ui| {
+                    if ui::secondary_button(ui, "取消").clicked() {
                         cancel = true;
                     }
-                    if ui::danger_button(ui, "结束进程").clicked() {
+                    if ui::danger_button(ui, "确认结束进程").clicked() {
                         confirm = true;
                     }
                 });
@@ -719,14 +785,17 @@ impl ToolboxApp {
             return;
         }
         egui::Area::new("toolbox-notice".into())
-            .anchor(egui::Align2::RIGHT_BOTTOM, [-18.0, -18.0])
+            .anchor(egui::Align2::RIGHT_BOTTOM, [-20.0, -20.0])
             .show(context, |ui| {
                 ui::compact_card(ui, |ui| {
-                    let color = match notice.tone {
-                        NoticeTone::Success => ui::success_text(ui),
-                        NoticeTone::Danger => ui::danger_text(ui),
-                    };
-                    ui.label(RichText::new(&notice.message).color(color));
+                    ui.horizontal(|ui| {
+                        let (icon, color) = match notice.tone {
+                            NoticeTone::Success => ("✓", ui::success_text(ui)),
+                            NoticeTone::Danger => ("⚠", ui::danger_text(ui)),
+                        };
+                        ui.colored_label(color, icon);
+                        ui.label(RichText::new(&notice.message).color(color).strong());
+                    });
                 });
             });
     }
@@ -796,6 +865,7 @@ fn nav_section_label(ui: &mut egui::Ui, label: &str) {
     ui.label(
         RichText::new(label)
             .size(12.0)
+            .strong()
             .color(ui.visuals().weak_text_color()),
     );
 }
@@ -803,7 +873,7 @@ fn nav_section_label(ui: &mut egui::Ui, label: &str) {
 fn nav_text_button(ui: &mut egui::Ui, label: &str, selected: bool) -> bool {
     let available = ui.available_width();
     let (response, painter) =
-        ui.allocate_painter(egui::vec2(available, 34.0), egui::Sense::click());
+        ui.allocate_painter(egui::vec2(available, 36.0), egui::Sense::click());
     let fill = if selected {
         ui::accent(ui).gamma_multiply(0.18)
     } else if response.hovered() {
@@ -823,19 +893,24 @@ fn nav_text_button(ui: &mut egui::Ui, label: &str, selected: bool) -> bool {
     if selected {
         painter.rect_filled(
             egui::Rect::from_min_size(
-                response.rect.left_top(),
-                egui::vec2(3.0, response.rect.height()),
+                response.rect.left_top() + egui::vec2(0.0, 4.0),
+                egui::vec2(3.5, response.rect.height() - 8.0),
             ),
             egui::CornerRadius::same(2),
             ui::accent(ui),
         );
     }
+    let text_color = if selected {
+        ui::accent(ui)
+    } else {
+        ui.visuals().text_color()
+    };
     painter.text(
-        response.rect.left_center() + egui::vec2(12.0, 0.0),
+        response.rect.left_center() + egui::vec2(14.0, 0.0),
         egui::Align2::LEFT_CENTER,
         label,
         egui::FontId::proportional(14.0),
-        ui.visuals().text_color(),
+        text_color,
     );
     if response.clicked() {
         response.request_focus();
@@ -870,8 +945,8 @@ fn tool_nav_button(ui: &mut egui::Ui, descriptor: &ToolDescriptor, selected: boo
     if selected {
         painter.rect_filled(
             egui::Rect::from_min_size(
-                response.rect.left_top(),
-                egui::vec2(3.0, response.rect.height()),
+                response.rect.left_top() + egui::vec2(0.0, 4.0),
+                egui::vec2(3.5, response.rect.height() - 8.0),
             ),
             egui::CornerRadius::same(2),
             ui::accent(ui),
@@ -891,12 +966,17 @@ fn tool_nav_button(ui: &mut egui::Ui, descriptor: &ToolDescriptor, selected: boo
             ui.visuals().weak_text_color()
         },
     );
+    let text_color = if selected {
+        ui::accent(ui)
+    } else {
+        ui.visuals().text_color()
+    };
     painter.text(
         response.rect.left_center() + egui::vec2(44.0, 0.0),
         egui::Align2::LEFT_CENTER,
         descriptor.name,
         egui::FontId::proportional(14.0),
-        ui.visuals().text_color(),
+        text_color,
     );
     if response.clicked() {
         response.request_focus();
@@ -910,7 +990,7 @@ fn tool_nav_button(ui: &mut egui::Ui, descriptor: &ToolDescriptor, selected: boo
 
 fn home_tool_card(ui: &mut egui::Ui, descriptor: &ToolDescriptor, favorite: bool) -> (bool, bool) {
     let width = ui.available_width().min(520.0);
-    let (response, painter) = ui.allocate_painter(egui::vec2(width, 112.0), egui::Sense::click());
+    let (response, painter) = ui.allocate_painter(egui::vec2(width, 116.0), egui::Sense::click());
     let painter = painter.with_clip_rect(response.rect);
     let fill = if response.hovered() {
         ui.visuals().widgets.hovered.bg_fill
@@ -918,7 +998,7 @@ fn home_tool_card(ui: &mut egui::Ui, descriptor: &ToolDescriptor, favorite: bool
         ui.visuals().window_fill
     };
     let stroke = if response.hovered() {
-        egui::Stroke::new(1.0_f32, ui::accent(ui))
+        egui::Stroke::new(1.2_f32, ui::accent(ui))
     } else {
         ui.visuals().widgets.inactive.bg_stroke
     };
@@ -938,21 +1018,48 @@ fn home_tool_card(ui: &mut egui::Ui, descriptor: &ToolDescriptor, favorite: bool
         );
     }
     let content = response.rect.shrink(16.0);
-    ui::paint_tool_icon(
-        &painter,
-        egui::Rect::from_min_size(content.left_top(), egui::vec2(34.0, 34.0)),
-        descriptor.icon,
-        ui::accent(ui),
-    );
+
+    // 图标容器底色
+    let icon_bg_rect = egui::Rect::from_min_size(content.left_top(), egui::vec2(38.0, 38.0));
+    let palette = ui::palette_for_ui(ui);
+    let icon_bg = palette
+        .accent
+        .gamma_multiply(if ui.visuals().dark_mode { 0.22 } else { 0.12 });
+    painter.rect_filled(icon_bg_rect, egui::CornerRadius::same(8), icon_bg);
+    ui::paint_tool_icon(&painter, icon_bg_rect, descriptor.icon, ui::accent(ui));
+
+    // 标题
     painter.text(
-        content.left_top() + egui::vec2(46.0, 3.0),
+        content.left_top() + egui::vec2(50.0, 2.0),
         egui::Align2::LEFT_TOP,
         descriptor.name,
         egui::FontId::proportional(16.0),
         ui.visuals().text_color(),
     );
+
+    // 分类标签
+    let category_tag = descriptor.category.label();
+    let cat_bg = palette.border_subtle;
+    let cat_rect = egui::Rect::from_min_size(
+        content.left_top()
+            + egui::vec2(
+                50.0 + (descriptor.name.chars().count() as f32) * 16.0 + 8.0,
+                2.0,
+            ),
+        egui::vec2(36.0, 18.0),
+    );
+    painter.rect_filled(cat_rect, egui::CornerRadius::same(4), cat_bg);
+    painter.text(
+        cat_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        category_tag,
+        egui::FontId::proportional(11.0),
+        ui.visuals().weak_text_color(),
+    );
+
+    // 收藏按钮
     let favorite_rect = egui::Rect::from_min_size(
-        response.rect.right_top() - egui::vec2(34.0, -8.0),
+        response.rect.right_top() - egui::vec2(36.0, -10.0),
         egui::vec2(26.0, 26.0),
     );
     let favorite_response = ui.interact(
@@ -973,29 +1080,36 @@ fn home_tool_card(ui: &mut egui::Ui, descriptor: &ToolDescriptor, favorite: bool
             egui::StrokeKind::Middle,
         );
     }
+    let star_color = if favorite {
+        palette.warning_text
+    } else if favorite_response.hovered() {
+        ui::accent(ui)
+    } else {
+        ui.visuals().weak_text_color()
+    };
     painter.text(
         favorite_rect.center(),
         egui::Align2::CENTER_CENTER,
         if favorite { "★" } else { "☆" },
         egui::FontId::proportional(18.0),
-        if favorite {
-            ui::accent(ui)
-        } else {
-            ui.visuals().weak_text_color()
-        },
+        star_color,
     );
+
+    // 描述
     painter.text(
-        content.left_top() + egui::vec2(46.0, 31.0),
+        content.left_top() + egui::vec2(50.0, 32.0),
         egui::Align2::LEFT_TOP,
         descriptor.description,
-        egui::FontId::proportional(14.0),
+        egui::FontId::proportional(13.5),
         ui.visuals().weak_text_color(),
     );
+
+    // 底部操作链接
     painter.text(
         content.right_bottom(),
         egui::Align2::RIGHT_BOTTOM,
-        "打开 →",
-        egui::FontId::proportional(12.0),
+        "进入工具 →",
+        egui::FontId::proportional(12.5),
         ui::accent(ui),
     );
     if response.clicked() {
