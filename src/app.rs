@@ -2,6 +2,7 @@
 //! 该模块拥有导航、主题、设置、后台任务协作与 Tool Invocation 路由；工具业务保留在独立模块中。
 
 use std::{
+    collections::HashSet,
     path::PathBuf,
     sync::mpsc::Receiver,
     time::{Duration, Instant},
@@ -37,8 +38,15 @@ enum Page {
 #[derive(Clone, Debug)]
 struct Notice {
     message: String,
-    color: Color32,
+    tone: NoticeTone,
     expires_at: Instant,
+}
+
+/// 通知的语义类别在绘制时映射到当前主题颜色，主题切换后不保留旧色值。
+#[derive(Clone, Copy, Debug)]
+enum NoticeTone {
+    Success,
+    Danger,
 }
 
 /// Tool Host：统一协调 Tool Registry、UI、后台任务和系统集成。
@@ -64,12 +72,19 @@ impl ToolboxApp {
         invocation_receiver: Receiver<ToolInvocation>,
         initial_invocation: Option<ToolInvocation>,
     ) -> Self {
+        let mut settings = settings;
+        let registry = build_registry();
+        let favorites_before = settings.favorite_tools.clone();
+        normalize_favorite_tools(&registry.descriptors(), &mut settings.favorite_tools);
+        if settings.favorite_tools != favorites_before {
+            let _ = settings_store.save(&settings);
+        }
         ui::install_windows_fonts(&creation_context.egui_ctx);
         ui::configure_styles(&creation_context.egui_ctx);
         apply_theme(&creation_context.egui_ctx, settings.theme);
         let (task_dispatcher, task_receiver) = TaskDispatcher::new();
         Self {
-            registry: build_registry(),
+            registry,
             page: Page::Home,
             search: String::new(),
             settings_store,
@@ -152,6 +167,31 @@ impl ToolboxApp {
                     if nav_text_button(ui, "常用工具", self.page == Page::Home) {
                         actions.push(AppAction::NavigateTo("home".into()));
                     }
+                    let favorites: Vec<_> = self
+                        .registry
+                        .descriptors()
+                        .into_iter()
+                        .filter(|descriptor| {
+                            self.settings
+                                .favorite_tools
+                                .iter()
+                                .any(|id| id == descriptor.id)
+                        })
+                        .collect();
+                    if !favorites.is_empty() {
+                        ui.add_space(ui::SPACE_16);
+                        nav_section_label(ui, "收藏");
+                        ui.add_space(ui::SPACE_4);
+                        for descriptor in favorites {
+                            if tool_nav_button(
+                                ui,
+                                &descriptor,
+                                self.page == Page::Tool(descriptor.id.into()),
+                            ) {
+                                actions.push(AppAction::NavigateTo(descriptor.id.into()));
+                            }
+                        }
+                    }
                     ui.add_space(ui::SPACE_16);
                     for category in categories {
                         nav_section_label(ui, category.label());
@@ -191,17 +231,24 @@ impl ToolboxApp {
                     .inner_margin(egui::Margin::same(24)),
             )
             .show(context, |ui| {
-                ui.set_max_width(1120.0);
-                match page {
-                    Page::Home => self.render_home(ui),
-                    Page::Tool(id) => self
-                        .registry
-                        .get_mut(&id)
-                        .map(|tool| tool.ui(ui, ToolUiContext))
-                        .unwrap_or_else(|| vec![AppAction::NavigateTo("home".into())]),
-                    Page::Settings => self.render_settings(ui),
-                    Page::About => self.render_about(ui),
-                }
+                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width().min(1040.0), ui.available_height()),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| match page {
+                            Page::Home => self.render_home(ui),
+                            Page::Tool(id) => self
+                                .registry
+                                .get_mut(&id)
+                                .map(|tool| tool.ui(ui, ToolUiContext))
+                                .unwrap_or_else(|| vec![AppAction::NavigateTo("home".into())]),
+                            Page::Settings => self.render_settings(ui),
+                            Page::About => self.render_about(ui),
+                        },
+                    )
+                    .inner
+                })
+                .inner
             })
             .inner
     }
@@ -211,18 +258,44 @@ impl ToolboxApp {
         ui::page_heading(ui, "常用工具", "快速进入常用的系统诊断工具。");
         ui.add_space(ui::SPACE_24);
         let descriptors = self.registry.descriptors();
-        if ui.available_width() >= 820.0 {
+        if ui.available_width() >= 728.0 {
             ui.columns(2, |columns| {
                 for (index, descriptor) in descriptors.iter().enumerate() {
-                    if home_tool_card(&mut columns[index % 2], descriptor) {
+                    let (open, favorite) = home_tool_card(
+                        &mut columns[index % 2],
+                        descriptor,
+                        self.settings
+                            .favorite_tools
+                            .iter()
+                            .any(|id| id == descriptor.id),
+                    );
+                    if open {
                         actions.push(AppAction::NavigateTo(descriptor.id.into()));
+                    }
+                    if favorite {
+                        actions.push(AppAction::ToggleFavorite {
+                            tool_id: descriptor.id.into(),
+                        });
                     }
                 }
             });
         } else {
             for descriptor in &descriptors {
-                if home_tool_card(ui, descriptor) {
+                let (open, favorite) = home_tool_card(
+                    ui,
+                    descriptor,
+                    self.settings
+                        .favorite_tools
+                        .iter()
+                        .any(|id| id == descriptor.id),
+                );
+                if open {
                     actions.push(AppAction::NavigateTo(descriptor.id.into()));
+                }
+                if favorite {
+                    actions.push(AppAction::ToggleFavorite {
+                        tool_id: descriptor.id.into(),
+                    });
                 }
                 ui.add_space(ui::SPACE_12);
             }
@@ -316,7 +389,7 @@ impl ToolboxApp {
         ui::page_heading(
             ui,
             "关于 Windows Toolbox",
-            "V0.1.0 · Windows 原生系统诊断工具集",
+            "V0.1.1 · Windows 原生系统诊断工具集",
         );
         ui.add_space(ui::SPACE_24);
         ui::card(ui, |ui| {
@@ -346,7 +419,7 @@ impl ToolboxApp {
                 AppAction::InspectProcess { pid } => self.dispatch_process(pid),
                 AppAction::CopyText(text) => context.copy_text(text),
                 AppAction::OpenFileLocation(path) => match open_file_location(&path) {
-                    Ok(()) => self.set_notice("已在资源管理器中打开文件位置", ui::success()),
+                    Ok(()) => self.set_notice("已在资源管理器中打开文件位置", NoticeTone::Success),
                     Err(error) => self.set_error_notice(error),
                 },
                 AppAction::RequestTerminateProcess(process) => {
@@ -354,6 +427,7 @@ impl ToolboxApp {
                 }
                 AppAction::TerminateProcess { pid } => self.dispatch_termination(pid),
                 AppAction::ToggleContextMenu { enabled } => self.toggle_context_menu(enabled),
+                AppAction::ToggleFavorite { tool_id } => self.toggle_favorite(&tool_id),
                 AppAction::ClearRecents => {
                     self.settings.recent_tools.clear();
                     self.persist_settings();
@@ -382,7 +456,7 @@ impl ToolboxApp {
         }
         let tool_id = invocation.tool_id.clone();
         if self.registry.get(&tool_id).is_none() {
-            self.set_notice("收到未知工具调用", ui::danger());
+            self.set_notice("收到未知工具调用", NoticeTone::Danger);
             return;
         }
         self.navigate_to(&tool_id);
@@ -444,7 +518,7 @@ impl ToolboxApp {
                     } else {
                         "资源管理器右键菜单已移除"
                     },
-                    ui::success(),
+                    NoticeTone::Success,
                 );
             }
             Err(error) => self.set_error_notice(error),
@@ -467,7 +541,7 @@ impl ToolboxApp {
                 ui.add_space(8.0);
                 ui.label(format!("{}  (PID {})", process.name, process.pid));
                 ui.add_space(8.0);
-                ui.label(RichText::new("这可能导致未保存的数据丢失。").color(ui::danger()));
+                ui.label(RichText::new("这可能导致未保存的数据丢失。").color(ui::danger_text(ui)));
                 ui.add_space(14.0);
                 ui.horizontal(|ui| {
                     if ui.button("取消").clicked() {
@@ -508,23 +582,36 @@ impl ToolboxApp {
         self.persist_settings();
     }
 
+    fn toggle_favorite(&mut self, tool_id: &str) {
+        if self.settings.favorite_tools.iter().any(|id| id == tool_id) {
+            self.settings.favorite_tools.retain(|id| id != tool_id);
+        } else if self.registry.get(tool_id).is_some() {
+            self.settings.favorite_tools.push(tool_id.to_owned());
+        }
+        self.persist_settings();
+    }
+
     fn persist_settings(&mut self) {
+        normalize_favorite_tools(
+            &self.registry.descriptors(),
+            &mut self.settings.favorite_tools,
+        );
         if let Err(error) = self.settings_store.save(&self.settings) {
             self.set_error_notice(error);
         }
     }
 
-    fn set_notice(&mut self, message: impl Into<String>, color: Color32) {
+    fn set_notice(&mut self, message: impl Into<String>, tone: NoticeTone) {
         self.notice = Some(Notice {
             message: message.into(),
-            color,
+            tone,
             expires_at: Instant::now() + Duration::from_secs(4),
         });
     }
 
     fn set_error_notice(&mut self, error: AppError) {
         let (title, detail) = error.user_message();
-        self.set_notice(format!("{title}：{detail}"), ui::danger());
+        self.set_notice(format!("{title}：{detail}"), NoticeTone::Danger);
     }
 
     fn render_notice(&mut self, context: &egui::Context) {
@@ -539,7 +626,11 @@ impl ToolboxApp {
             .anchor(egui::Align2::RIGHT_BOTTOM, [-18.0, -18.0])
             .show(context, |ui| {
                 ui::compact_card(ui, |ui| {
-                    ui.label(RichText::new(&notice.message).color(notice.color));
+                    let color = match notice.tone {
+                        NoticeTone::Success => ui::success_text(ui),
+                        NoticeTone::Danger => ui::danger_text(ui),
+                    };
+                    ui.label(RichText::new(&notice.message).color(color));
                 });
             });
     }
@@ -577,7 +668,8 @@ pub fn native_options(settings: &AppSettings, persistence_path: PathBuf) -> efra
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 760.0])
-            .with_min_inner_size([960.0, 620.0]),
+            .with_min_inner_size([960.0, 620.0])
+            .with_clamp_size_to_monitor_size(true),
         persist_window: true,
         persistence_path: Some(persistence_path),
         ..Default::default()
@@ -700,7 +792,7 @@ fn tool_nav_button(ui: &mut egui::Ui, descriptor: &ToolDescriptor, selected: boo
             }))
 }
 
-fn home_tool_card(ui: &mut egui::Ui, descriptor: &ToolDescriptor) -> bool {
+fn home_tool_card(ui: &mut egui::Ui, descriptor: &ToolDescriptor, favorite: bool) -> (bool, bool) {
     let width = ui.available_width().min(520.0);
     let (response, painter) = ui.allocate_painter(egui::vec2(width, 112.0), egui::Sense::click());
     let painter = painter.with_clip_rect(response.rect);
@@ -743,6 +835,39 @@ fn home_tool_card(ui: &mut egui::Ui, descriptor: &ToolDescriptor) -> bool {
         egui::FontId::proportional(16.0),
         ui.visuals().text_color(),
     );
+    let favorite_rect = egui::Rect::from_min_size(
+        response.rect.right_top() - egui::vec2(34.0, -8.0),
+        egui::vec2(26.0, 26.0),
+    );
+    let favorite_response = ui.interact(
+        favorite_rect,
+        ui.id().with(("favorite", descriptor.id)),
+        egui::Sense::click(),
+    );
+    favorite_response.clone().on_hover_text(if favorite {
+        "取消收藏"
+    } else {
+        "收藏工具"
+    });
+    if favorite_response.has_focus() {
+        painter.rect_stroke(
+            favorite_rect.shrink(1.0),
+            egui::CornerRadius::same(6),
+            egui::Stroke::new(2.0_f32, ui::accent(ui)),
+            egui::StrokeKind::Middle,
+        );
+    }
+    painter.text(
+        favorite_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        if favorite { "★" } else { "☆" },
+        egui::FontId::proportional(18.0),
+        if favorite {
+            ui::accent(ui)
+        } else {
+            ui.visuals().weak_text_color()
+        },
+    );
     painter.text(
         content.left_top() + egui::vec2(46.0, 31.0),
         egui::Align2::LEFT_TOP,
@@ -760,11 +885,30 @@ fn home_tool_card(ui: &mut egui::Ui, descriptor: &ToolDescriptor) -> bool {
     if response.clicked() {
         response.request_focus();
     }
-    response.clicked()
+    let open = response.clicked()
         || (response.has_focus()
             && ui.input(|input| {
                 input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
-            }))
+            }));
+    if favorite_response.clicked() {
+        favorite_response.request_focus();
+    }
+    let toggle_favorite = favorite_response.clicked()
+        || (favorite_response.has_focus()
+            && ui.input(|input| {
+                input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
+            }));
+    (open && !toggle_favorite, toggle_favorite)
+}
+
+/// 按当前注册顺序保留收藏项，清除旧版本遗留的无效或重复工具标识。
+fn normalize_favorite_tools(descriptors: &[ToolDescriptor], favorite_tools: &mut Vec<String>) {
+    let selected: HashSet<_> = favorite_tools.iter().map(String::as_str).collect();
+    *favorite_tools = descriptors
+        .iter()
+        .filter(|descriptor| selected.contains(descriptor.id))
+        .map(|descriptor| descriptor.id.to_owned())
+        .collect();
 }
 
 fn apply_theme(context: &egui::Context, preference: ThemePreference) {
@@ -774,4 +918,25 @@ fn apply_theme(context: &egui::Context, preference: ThemePreference) {
         ThemePreference::Dark => egui::ThemePreference::Dark,
     };
     context.set_theme(preference);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_favorite_tools;
+    use crate::tools::build_registry;
+
+    #[test]
+    fn favorite_tools_are_deduplicated_filtered_and_registry_ordered() {
+        let descriptors = build_registry().descriptors();
+        let mut favorites = vec![
+            "process-inspector".to_owned(),
+            "missing-tool".to_owned(),
+            "file-lock".to_owned(),
+            "process-inspector".to_owned(),
+        ];
+
+        normalize_favorite_tools(&descriptors, &mut favorites);
+
+        assert_eq!(favorites, ["file-lock", "process-inspector"]);
+    }
 }

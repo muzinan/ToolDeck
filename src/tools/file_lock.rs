@@ -55,10 +55,19 @@ impl ToolModule for FileLockTool {
         );
         ui.add_space(ui::SPACE_16);
         ui::card(ui, |ui| {
-            ui.horizontal(|ui| {
-                let input_width = (ui.available_width() - 96.0).max(120.0);
+            let render_controls = |ui: &mut egui::Ui| {
                 ui.add_sized(
-                    [input_width, 34.0],
+                    [
+                        if matches!(
+                            ui::action_layout(ui.available_width()),
+                            ui::ActionLayout::Horizontal
+                        ) {
+                            (ui.available_width() - 88.0).max(120.0)
+                        } else {
+                            ui.available_width()
+                        },
+                        34.0,
+                    ],
                     TextEdit::singleline(&mut self.path)
                         .hint_text("输入文件完整路径或直接拖入文件"),
                 );
@@ -68,7 +77,11 @@ impl ToolModule for FileLockTool {
                 if query.clicked() {
                     actions.extend(self.start_query());
                 }
-            });
+            };
+            match ui::action_layout(ui.available_width()) {
+                ui::ActionLayout::Horizontal => ui.horizontal(render_controls),
+                ui::ActionLayout::Vertical => ui.vertical(render_controls),
+            };
         });
 
         if self.busy {
@@ -91,37 +104,64 @@ impl ToolModule for FileLockTool {
                     ui::card(ui, |ui| {
                         ui.label(RichText::new("查询文件").strong());
                         ui.add_space(ui::SPACE_4);
-                        ui.monospace(&result.path);
+                        ui.add(egui::Label::new(RichText::new(&result.path).monospace()).wrap())
+                            .on_hover_text(&result.path);
                     });
                     ui.add_space(ui::SPACE_12);
-                    ui.label(RichText::new("正在使用").color(ui::success()).strong());
+                    ui.label(
+                        RichText::new("正在使用")
+                            .color(ui::success_text(ui))
+                            .strong(),
+                    );
                     ui.add_space(ui::SPACE_8);
                     for process in &result.processes {
                         ui::card(ui, |ui| {
-                            ui.set_min_width(ui.available_width());
-                            ui.horizontal(|ui| {
-                                ui.vertical(|ui| {
-                                    ui.label(RichText::new(&process.name).strong());
-                                    ui.label(format!("PID {}", process.pid));
-                                    if let Some(path) = &process.exe_path {
-                                        ui.small(path);
-                                    }
-                                });
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if ui::primary_button(ui, "查看进程").clicked() {
-                                            actions.push(AppAction::InvokeTool(
-                                                ToolInvocation::process(process.pid),
-                                            ));
-                                        }
-                                        if ui.small_button("复制 PID").clicked() {
-                                            actions
-                                                .push(AppAction::CopyText(process.pid.to_string()));
-                                        }
-                                    },
-                                );
-                            });
+                            let render_actions = |ui: &mut egui::Ui| {
+                                if ui::primary_button(ui, "查看进程").clicked() {
+                                    actions.push(AppAction::InvokeTool(ToolInvocation::process(
+                                        process.pid,
+                                    )));
+                                }
+                                if ui.small_button("复制 PID").clicked() {
+                                    actions.push(AppAction::CopyText(process.pid.to_string()));
+                                }
+                            };
+                            let render_details = |ui: &mut egui::Ui| {
+                                ui.add(
+                                    egui::Label::new(RichText::new(&process.name).strong()).wrap(),
+                                )
+                                .on_hover_text(&process.name);
+                                ui.label(format!("PID {}", process.pid));
+                                if let Some(path) = &process.exe_path {
+                                    ui.add(egui::Label::new(RichText::new(path).small()).wrap())
+                                        .on_hover_text(path);
+                                }
+                            };
+                            match ui::action_layout(ui.available_width()) {
+                                ui::ActionLayout::Horizontal => {
+                                    let action_width = 164.0;
+                                    let info_width =
+                                        (ui.available_width() - action_width - ui::SPACE_8)
+                                            .max(160.0);
+                                    ui.horizontal(|ui| {
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(info_width, 0.0),
+                                            egui::Layout::top_down(egui::Align::Min),
+                                            render_details,
+                                        );
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(action_width, 0.0),
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            render_actions,
+                                        );
+                                    });
+                                }
+                                ui::ActionLayout::Vertical => {
+                                    ui.vertical(render_details);
+                                    ui.add_space(ui::SPACE_8);
+                                    ui.horizontal_wrapped(render_actions);
+                                }
+                            }
                         });
                         ui.add_space(ui::SPACE_8);
                     }
@@ -192,5 +232,5 @@ pub(crate) fn empty_state(ui: &mut egui::Ui, title: &str, detail: &str) {
 
 pub(crate) fn error_state(ui: &mut egui::Ui, error: &AppError) {
     let (title, detail) = error.user_message();
-    ui::state_card(ui, title, &detail, ui::danger());
+    ui::state_card(ui, title, &detail, ui::danger_text(ui));
 }

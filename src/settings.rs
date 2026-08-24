@@ -27,6 +27,7 @@ impl ThemePreference {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
 pub struct AppSettings {
     pub theme: ThemePreference,
     pub context_menu_enabled: bool,
@@ -81,5 +82,18 @@ impl SettingsStore {
 
     pub fn eframe_storage_path(&self) -> PathBuf {
         self.directory.join("eframe")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppSettings, ThemePreference};
+
+    #[test]
+    fn old_settings_json_uses_defaults_for_new_fields() {
+        let settings: AppSettings = serde_json::from_str(r#"{"theme":"Dark"}"#).unwrap();
+        assert_eq!(settings.theme, ThemePreference::Dark);
+        assert!(!settings.context_menu_enabled);
+        assert!(settings.favorite_tools.is_empty());
     }
 }

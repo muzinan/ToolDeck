@@ -6,7 +6,7 @@ mod process;
 mod restart_manager;
 pub mod shell_context_menu;
 pub mod single_instance;
-mod wide;
+pub(crate) mod wide;
 
 pub use explorer::open_file_location;
 pub use network::query_network_endpoints;

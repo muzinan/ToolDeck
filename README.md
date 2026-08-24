@@ -1,6 +1,6 @@
 # Windows Toolbox
 
-Windows Toolbox 是一个面向 Windows 10/11 x64 的原生系统工具集合。V0.1 提供文件占用查询、端口占用查询和进程关系查看，并从一开始采用可扩展的 Tool Host + Tool Module 架构。
+Windows Toolbox 是一个面向 Windows 10/11 x64 的原生系统工具集合。V0.1.1 提供文件占用查询、端口占用查询和进程关系查看，并从一开始采用可扩展的 Tool Host + Tool Module 架构。
 
 ## 当前功能
 

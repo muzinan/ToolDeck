@@ -22,6 +22,95 @@ pub const SPACE_12: f32 = 12.0;
 pub const SPACE_16: f32 = 16.0;
 pub const SPACE_24: f32 = 24.0;
 
+/// 工具操作栏在窄窗口中的布局策略，避免输入与按钮互相挤压。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActionLayout {
+    Horizontal,
+    Vertical,
+}
+
+/// 主题调色板将可访问性关键颜色集中为可测试的数据，避免浅深主题出现隐式色值漂移。
+#[derive(Clone, Copy)]
+struct ThemePalette {
+    accent: Color32,
+    primary_button: Color32,
+    danger_button: Color32,
+    surface: Color32,
+    panel: Color32,
+    border: Color32,
+    text: Color32,
+    weak: Color32,
+    success_text: Color32,
+    danger_text: Color32,
+    hover: Color32,
+}
+
+fn theme_palette(theme: egui::Theme) -> ThemePalette {
+    let dark = theme == egui::Theme::Dark;
+    ThemePalette {
+        accent: if dark {
+            Color32::from_rgb(91, 140, 255)
+        } else {
+            Color32::from_rgb(37, 99, 235)
+        },
+        // 深色主题的强调色用于链接和焦点；主按钮单独加深以保证白字达到 AA 对比度。
+        primary_button: if dark {
+            Color32::from_rgb(52, 99, 204)
+        } else {
+            Color32::from_rgb(37, 99, 235)
+        },
+        danger_button: Color32::from_rgb(180, 35, 24),
+        surface: if dark {
+            Color32::from_rgb(21, 29, 43)
+        } else {
+            Color32::WHITE
+        },
+        panel: if dark {
+            Color32::from_rgb(14, 20, 31)
+        } else {
+            Color32::from_rgb(242, 246, 252)
+        },
+        border: if dark {
+            Color32::from_rgb(50, 64, 85)
+        } else {
+            Color32::from_rgb(214, 224, 238)
+        },
+        text: if dark {
+            Color32::from_rgb(232, 238, 249)
+        } else {
+            Color32::from_rgb(25, 35, 52)
+        },
+        weak: if dark {
+            Color32::from_rgb(164, 178, 199)
+        } else {
+            Color32::from_rgb(90, 107, 132)
+        },
+        success_text: if dark {
+            Color32::from_rgb(110, 231, 183)
+        } else {
+            Color32::from_rgb(20, 108, 67)
+        },
+        danger_text: if dark {
+            Color32::from_rgb(253, 164, 175)
+        } else {
+            Color32::from_rgb(180, 35, 24)
+        },
+        hover: if dark {
+            Color32::from_rgb(36, 52, 78)
+        } else {
+            Color32::from_rgb(232, 241, 255)
+        },
+    }
+}
+
+pub fn action_layout(available_width: f32) -> ActionLayout {
+    if available_width >= 680.0 {
+        ActionLayout::Horizontal
+    } else {
+        ActionLayout::Vertical
+    }
+}
+
 /// 根据 Windows 字体目录构造固定优先级的字体路径。
 pub fn font_candidate_paths(font_directory: &Path) -> Vec<PathBuf> {
     FONT_CANDIDATES
@@ -84,41 +173,7 @@ pub fn configure_styles(context: &egui::Context) {
 
 fn configure_style(style: &mut egui::Style, theme: egui::Theme) {
     let dark = theme == egui::Theme::Dark;
-    let accent = if dark {
-        Color32::from_rgb(91, 140, 255)
-    } else {
-        Color32::from_rgb(37, 99, 235)
-    };
-    let surface = if dark {
-        Color32::from_rgb(21, 29, 43)
-    } else {
-        Color32::WHITE
-    };
-    let panel = if dark {
-        Color32::from_rgb(14, 20, 31)
-    } else {
-        Color32::from_rgb(242, 246, 252)
-    };
-    let border = if dark {
-        Color32::from_rgb(50, 64, 85)
-    } else {
-        Color32::from_rgb(214, 224, 238)
-    };
-    let text = if dark {
-        Color32::from_rgb(232, 238, 249)
-    } else {
-        Color32::from_rgb(25, 35, 52)
-    };
-    let weak = if dark {
-        Color32::from_rgb(164, 178, 199)
-    } else {
-        Color32::from_rgb(90, 107, 132)
-    };
-    let hover = if dark {
-        Color32::from_rgb(36, 52, 78)
-    } else {
-        Color32::from_rgb(232, 241, 255)
-    };
+    let palette = theme_palette(theme);
 
     style.spacing.item_spacing = Vec2::new(SPACE_8, SPACE_8);
     style.spacing.button_padding = Vec2::new(SPACE_12, SPACE_8);
@@ -139,9 +194,9 @@ fn configure_style(style: &mut egui::Style, theme: egui::Theme) {
     } else {
         egui::Visuals::light()
     };
-    style.visuals.panel_fill = panel;
-    style.visuals.window_fill = surface;
-    style.visuals.extreme_bg_color = surface;
+    style.visuals.panel_fill = palette.panel;
+    style.visuals.window_fill = palette.surface;
+    style.visuals.extreme_bg_color = palette.surface;
     style.visuals.faint_bg_color = if dark {
         Color32::from_rgb(26, 37, 54)
     } else {
@@ -152,25 +207,27 @@ fn configure_style(style: &mut egui::Style, theme: egui::Theme) {
     } else {
         Color32::from_rgb(238, 243, 250)
     };
-    style.visuals.window_stroke = Stroke::new(1.0_f32, border);
-    style.visuals.widgets.noninteractive.bg_fill = surface;
-    style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, border);
-    style.visuals.widgets.noninteractive.fg_stroke.color = text;
-    style.visuals.widgets.inactive.bg_fill = surface;
-    style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, border);
-    style.visuals.widgets.inactive.fg_stroke.color = text;
-    style.visuals.widgets.hovered.bg_fill = hover;
-    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.5_f32, accent);
-    style.visuals.widgets.hovered.fg_stroke.color = text;
-    style.visuals.widgets.active.bg_fill = accent;
-    style.visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, accent);
-    style.visuals.widgets.active.fg_stroke.color = Color32::WHITE;
-    style.visuals.widgets.open.bg_fill = hover;
-    style.visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, accent);
-    style.visuals.selection.bg_fill = accent.gamma_multiply(if dark { 0.45 } else { 0.22 });
-    style.visuals.selection.stroke = Stroke::new(1.0_f32, accent);
-    style.visuals.hyperlink_color = accent;
-    style.visuals.weak_text_color = Some(weak);
+    style.visuals.window_stroke = Stroke::new(1.0_f32, palette.border);
+    style.visuals.widgets.noninteractive.bg_fill = palette.surface;
+    style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, palette.border);
+    style.visuals.widgets.noninteractive.fg_stroke.color = palette.text;
+    style.visuals.widgets.inactive.bg_fill = palette.surface;
+    style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, palette.border);
+    style.visuals.widgets.inactive.fg_stroke.color = palette.text;
+    style.visuals.widgets.hovered.bg_fill = palette.hover;
+    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.5_f32, palette.accent);
+    style.visuals.widgets.hovered.fg_stroke.color = palette.text;
+    style.visuals.widgets.active.bg_fill = palette.hover;
+    style.visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, palette.accent);
+    style.visuals.widgets.active.fg_stroke.color = palette.text;
+    style.visuals.widgets.open.bg_fill = palette.hover;
+    style.visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, palette.accent);
+    style.visuals.selection.bg_fill = palette
+        .accent
+        .gamma_multiply(if dark { 0.45 } else { 0.22 });
+    style.visuals.selection.stroke = Stroke::new(1.0_f32, palette.accent);
+    style.visuals.hyperlink_color = palette.accent;
+    style.visuals.weak_text_color = Some(palette.weak);
     style.visuals.window_corner_radius = CornerRadius::same(12);
     style.visuals.menu_corner_radius = CornerRadius::same(8);
     style.visuals.widgets.inactive.corner_radius = CornerRadius::same(6);
@@ -184,11 +241,31 @@ pub fn accent(ui: &egui::Ui) -> Color32 {
     ui.visuals().hyperlink_color
 }
 
-pub fn success() -> Color32 {
-    Color32::from_rgb(22, 138, 91)
+fn primary_button_fill(ui: &egui::Ui) -> Color32 {
+    let theme = if ui.visuals().dark_mode {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    };
+    theme_palette(theme).primary_button
 }
-pub fn danger() -> Color32 {
-    Color32::from_rgb(205, 67, 67)
+
+fn palette_for_ui(ui: &egui::Ui) -> ThemePalette {
+    theme_palette(if ui.visuals().dark_mode {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    })
+}
+
+/// 返回当前主题中可在页面与卡片背景上阅读的成功状态文字色。
+pub fn success_text(ui: &egui::Ui) -> Color32 {
+    palette_for_ui(ui).success_text
+}
+
+/// 返回当前主题中可在页面与卡片背景上阅读的危险状态文字色。
+pub fn danger_text(ui: &egui::Ui) -> Color32 {
+    palette_for_ui(ui).danger_text
 }
 
 /// 页面标题与说明，统一所有工具页面的信息层级。
@@ -198,9 +275,8 @@ pub fn page_heading(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     ui.label(RichText::new(subtitle).color(ui.visuals().weak_text_color()));
 }
 
-/// 绘制填满当前内容宽度的页面级信息卡片。
+/// 绘制服从父布局宽度的页面级信息卡片。
 pub fn card(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
-    let content_width = (ui.available_width() - SPACE_16 * 2.0).max(0.0);
     let frame = Frame::new()
         .fill(ui.visuals().window_fill)
         .stroke(Stroke::new(
@@ -209,10 +285,7 @@ pub fn card(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
         ))
         .corner_radius(CornerRadius::same(8))
         .inner_margin(Margin::same(SPACE_16 as i8));
-    frame.show(ui, |ui| {
-        ui.set_min_width(content_width);
-        add_contents(ui);
-    });
+    frame.show(ui, add_contents);
 }
 
 /// 绘制按内容收缩的浮层卡片，避免通知提示被扩展到页面全宽。
@@ -243,7 +316,7 @@ pub fn state_card(ui: &mut egui::Ui, title: &str, detail: &str, color: Color32) 
 
 pub fn primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let button = egui::Button::new(RichText::new(text).color(Color32::WHITE).strong())
-        .fill(accent(ui))
+        .fill(primary_button_fill(ui))
         .stroke(Stroke::NONE);
     ui.add(button)
 }
@@ -251,7 +324,7 @@ pub fn primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
 pub fn danger_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add(
         egui::Button::new(RichText::new(text).color(Color32::WHITE).strong())
-            .fill(danger())
+            .fill(palette_for_ui(ui).danger_button)
             .stroke(Stroke::NONE),
     )
 }
@@ -334,8 +407,33 @@ pub fn paint_tool_icon(
 
 #[cfg(test)]
 mod tests {
-    use super::{first_readable_font, font_candidate_paths};
+    use super::{
+        ActionLayout, action_layout, first_readable_font, font_candidate_paths, theme_palette,
+    };
+    use eframe::egui::{Color32, Theme};
     use std::path::Path;
+
+    fn relative_luminance(color: Color32) -> f32 {
+        fn channel(value: u8) -> f32 {
+            let value = f32::from(value) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        0.2126 * channel(color.r()) + 0.7152 * channel(color.g()) + 0.0722 * channel(color.b())
+    }
+
+    fn contrast_ratio(first: Color32, second: Color32) -> f32 {
+        let (lighter, darker) = (relative_luminance(first), relative_luminance(second));
+        let (lighter, darker) = if lighter >= darker {
+            (lighter, darker)
+        } else {
+            (darker, lighter)
+        };
+        (lighter + 0.05) / (darker + 0.05)
+    }
 
     #[test]
     fn font_candidates_follow_windows_ui_priority() {
@@ -350,5 +448,27 @@ mod tests {
     #[test]
     fn missing_font_candidates_have_no_fallback_path() {
         assert!(first_readable_font(Path::new("Z:/missing-fonts")).is_none());
+    }
+
+    #[test]
+    fn action_layout_switches_at_compact_breakpoint() {
+        assert_eq!(action_layout(680.0), ActionLayout::Horizontal);
+        assert_eq!(action_layout(679.0), ActionLayout::Vertical);
+    }
+
+    #[test]
+    fn theme_text_buttons_and_focus_meet_contrast_targets() {
+        for theme in [Theme::Light, Theme::Dark] {
+            let palette = theme_palette(theme);
+            for background in [palette.panel, palette.surface] {
+                assert!(contrast_ratio(palette.text, background) >= 4.5);
+                assert!(contrast_ratio(palette.weak, background) >= 4.5);
+                assert!(contrast_ratio(palette.success_text, background) >= 4.5);
+                assert!(contrast_ratio(palette.danger_text, background) >= 4.5);
+                assert!(contrast_ratio(palette.accent, background) >= 3.0);
+            }
+            assert!(contrast_ratio(Color32::WHITE, palette.primary_button) >= 4.5);
+            assert!(contrast_ratio(Color32::WHITE, palette.danger_button) >= 4.5);
+        }
     }
 }

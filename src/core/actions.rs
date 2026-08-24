@@ -17,5 +17,6 @@ pub enum AppAction {
     RequestTerminateProcess(ProcessSummary),
     TerminateProcess { pid: u32 },
     ToggleContextMenu { enabled: bool },
+    ToggleFavorite { tool_id: String },
     ClearRecents,
 }
