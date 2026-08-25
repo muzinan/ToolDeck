@@ -1,0 +1,143 @@
+name: 自动构建并发布 Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cargo-version-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: 构建 Windows Release
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 检查版本变化
+        id: version
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Cargo.toml 的 package.version 必须是稳定的三段式版本号。"
+            exit 1
+          fi
+
+          tag="v${version}"
+          should_release="true"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            if [[ -z "${BEFORE_SHA:-}" || "$BEFORE_SHA" =~ ^0+$ ]]; then
+              echo "::error::无法确定推送前的提交，不能安全判断版本是否变化。"
+              exit 1
+            fi
+
+            previous_version="$(git show "${BEFORE_SHA}:Cargo.toml" 2>/dev/null \
+              | sed -n 's/^version = "\([^"]*\)"/\1/p' \
+              | head -n 1)" || true
+            if [[ -z "$previous_version" ]]; then
+              echo "::error::无法读取推送前的 Cargo.toml 版本。"
+              exit 1
+            fi
+
+            if [[ "$previous_version" == "$version" ]]; then
+              should_release="false"
+              echo "::notice::Cargo.toml 发生变化，但版本仍为 ${version}，跳过发布。"
+            fi
+          fi
+
+          if [[ "$should_release" == "true" ]] \
+            && gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            should_release="false"
+            echo "::notice::Release ${tag} 已存在，跳过重复发布。"
+          fi
+
+          echo "should_release=${should_release}" >> "$GITHUB_OUTPUT"
+
+      - name: 安装稳定版 Rust
+        if: steps.version.outputs.should_release == 'true'
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: 校验版本文件
+        if: steps.version.outputs.should_release == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          manifest_version="$(sed -n 's/.*assemblyIdentity version="\([^"]*\)".*/\1/p' \
+            Toolbox.manifest | head -n 1)"
+          if [[ "$manifest_version" != "${VERSION}.0" ]]; then
+            echo "::error::Toolbox.manifest 版本 ${manifest_version} 与 Cargo.toml 版本 ${VERSION} 不一致。"
+            exit 1
+          fi
+
+          cargo metadata --locked --no-deps --format-version 1 >/dev/null
+
+      - name: 运行测试
+        if: steps.version.outputs.should_release == 'true'
+        run: cargo test --locked
+
+      - name: 编译 Release
+        if: steps.version.outputs.should_release == 'true'
+        run: cargo build --release --locked
+
+      - name: 整理发布文件
+        if: steps.version.outputs.should_release == 'true'
+        id: package
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          artifact="ToolDeck-${TAG}-windows-x86_64.exe"
+          mkdir -p dist
+          cp target/release/windows-toolbox.exe "dist/${artifact}"
+          (
+            cd dist
+            sha256sum "$artifact" > "${artifact}.sha256"
+          )
+
+          echo "artifact=dist/${artifact}" >> "$GITHUB_OUTPUT"
+          echo "checksum=dist/${artifact}.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: 创建 GitHub Release
+        if: steps.version.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          ARTIFACT: ${{ steps.package.outputs.artifact }}
+          CHECKSUM: ${{ steps.package.outputs.checksum }}
+        run: |
+          gh release create "$TAG" "$ARTIFACT" "$CHECKSUM" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "ToolDeck ${TAG}" \
+            --generate-notes
