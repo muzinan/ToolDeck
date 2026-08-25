@@ -4,6 +4,7 @@
 pub mod dns;
 pub mod error;
 pub mod file;
+pub mod mtr;
 pub mod network;
 pub mod ping;
 pub mod process;
@@ -12,7 +13,10 @@ pub mod tcp_probe;
 pub use dns::{DnsRecord, DnsRecordType, DnsResult};
 pub use error::AppError;
 pub use file::FileLockResult;
+pub use mtr::{MtrConfig, MtrHopStats, MtrProgress, MtrResult};
 pub use network::{IpVersion, NetworkEndpoint, NetworkProtocol, TcpState};
 pub use ping::{PingAddressFamily, PingSample, PingSummary};
-pub use process::{ProcessInfo, ProcessSummary};
+pub use process::{
+    ProcessCommandLine, ProcessInfo, ProcessSummary, ProcessTreeNode, ProcessTreeSnapshot,
+};
 pub use tcp_probe::{TcpProbeAttempt, TcpProbeResult};

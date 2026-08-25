@@ -2,7 +2,7 @@
 //! 该模块拥有导航、主题、设置、后台任务协作与 Tool Invocation 路由；工具业务保留在独立模块中。
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::PathBuf,
     sync::mpsc::Receiver,
     time::{Duration, Instant},
@@ -28,28 +28,14 @@ use crate::{
     ui,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Page {
-    Home,
-    Tool(String),
-    Settings,
-    About,
-}
+mod actions;
+mod content;
+mod layout;
+mod navigation;
+mod overlay;
+mod state;
 
-/// 轻量级成功或失败提示；错误细节会留在对应工具页，外壳提示只说明刚发生的操作结果。
-#[derive(Clone, Debug)]
-struct Notice {
-    message: String,
-    tone: NoticeTone,
-    expires_at: Instant,
-}
-
-/// 通知的语义类别在绘制时映射到当前主题颜色，主题切换后不保留旧色值。
-#[derive(Clone, Copy, Debug)]
-enum NoticeTone {
-    Success,
-    Danger,
-}
+use state::{Notice, NoticeTone, Page};
 
 /// Tool Host：统一协调 Tool Registry、UI、后台任务和系统集成。
 pub struct ToolboxApp {
@@ -79,7 +65,7 @@ impl ToolboxApp {
         let mut settings = settings;
         let registry = build_registry();
         let favorites_before = settings.favorite_tools.clone();
-        normalize_favorite_tools(&registry.descriptors(), &mut settings.favorite_tools);
+        navigation::normalize_favorite_tools(&registry.descriptors(), &mut settings.favorite_tools);
         if settings.favorite_tools != favorites_before {
             let _ = settings_store.save(&settings);
         }
@@ -110,7 +96,7 @@ impl ToolboxApp {
     fn drain_background_messages(&mut self, context: &egui::Context) {
         while let Ok(envelope) = self.task_receiver.try_recv() {
             let is_finished = matches!(&envelope.event, TaskEvent::Finished(_));
-            if !accept_task_event(
+            if !actions::accept_task_event(
                 &mut self.latest_requests,
                 envelope.target_tool_id,
                 envelope.request_id,
@@ -126,6 +112,11 @@ impl ToolboxApp {
                 } => {
                     if let Some(tool) = self.registry.get_mut(envelope.target_tool_id) {
                         tool.handle_task_progress(message, completed, total);
+                    }
+                }
+                TaskEvent::MtrProgress(progress) => {
+                    if let Some(tool) = self.registry.get_mut(envelope.target_tool_id) {
+                        tool.handle_mtr_progress(progress);
                     }
                 }
                 TaskEvent::Finished(result) => {
@@ -220,17 +211,11 @@ impl ToolboxApp {
                     if nav_text_button(ui, "常用与收藏", self.page == Page::Home) {
                         actions.push(AppAction::NavigateTo("home".into()));
                     }
-                    let favorites: Vec<_> = self
-                        .registry
-                        .descriptors()
-                        .into_iter()
-                        .filter(|descriptor| {
-                            self.settings
-                                .favorite_tools
-                                .iter()
-                                .any(|id| id == descriptor.id)
-                        })
-                        .collect();
+                    let registered = self.registry.descriptors();
+                    let favorites = navigation::favorite_descriptors(
+                        &registered,
+                        &self.settings.favorite_tools,
+                    );
                     if !favorites.is_empty() {
                         ui.add_space(ui::SPACE_12);
                         nav_section_label(ui, "我的收藏");
@@ -285,24 +270,32 @@ impl ToolboxApp {
                     .inner_margin(egui::Margin::same(24)),
             )
             .show(context, |ui| {
-                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(ui.available_width().min(1040.0), ui.available_height()),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| match page {
-                            Page::Home => self.render_home(ui),
-                            Page::Tool(id) => self
-                                .registry
-                                .get_mut(&id)
-                                .map(|tool| tool.ui(ui, ToolUiContext))
-                                .unwrap_or_else(|| vec![AppAction::NavigateTo("home".into())]),
-                            Page::Settings => self.render_settings(ui),
-                            Page::About => self.render_about(ui),
-                        },
-                    )
+                egui::ScrollArea::vertical()
+                    .id_salt(content::MAIN_SCROLL_ID)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(layout::content_width(ui.available_width()), 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| match page {
+                                    Page::Home => self.render_home(ui),
+                                    Page::Tool(id) => self
+                                        .registry
+                                        .get_mut(&id)
+                                        .map(|tool| tool.ui(ui, ToolUiContext))
+                                        .unwrap_or_else(|| {
+                                            vec![AppAction::NavigateTo("home".into())]
+                                        }),
+                                    Page::Settings => self.render_settings(ui),
+                                    Page::About => self.render_about(ui),
+                                },
+                            )
+                            .inner
+                        })
+                        .inner
+                    })
                     .inner
-                })
-                .inner
             })
             .inner
     }
@@ -312,7 +305,7 @@ impl ToolboxApp {
         ui::page_heading(ui, "常用工具", "快速进入常用的系统与网络诊断工具。");
         ui.add_space(ui::SPACE_20);
         let descriptors = self.registry.descriptors();
-        if ui.available_width() >= 728.0 {
+        if layout::use_detail_split(ui.available_width()) {
             ui.columns(2, |columns| {
                 for (index, descriptor) in descriptors.iter().enumerate() {
                     let (open, favorite) = home_tool_card(
@@ -475,7 +468,7 @@ impl ToolboxApp {
         ui::page_heading(
             ui,
             "关于 Windows Toolbox",
-            "V0.2.0 · 原生高性能 Windows 系统诊断与工具集",
+            "V0.3.0 · 原生高性能 Windows 系统诊断与工具集",
         );
         ui.add_space(ui::SPACE_20);
         ui::card(ui, |ui| {
@@ -489,6 +482,7 @@ impl ToolboxApp {
             ui.label("• DNS 查询 · 原生解析 A / AAAA / CNAME / MX / TXT / NS / PTR 记录");
             ui.label("• Ping · 真实 ICMP 往返延迟与丢包率测试");
             ui.label("• TCP 端口测试 · 无侵入式 TCP 三次握手连通性与时延测试");
+            ui.label("• MTR 路径诊断 · 原生 ICMP 逐跳观察路由、延迟和丢包");
             ui.add_space(ui::SPACE_16);
             ui.label(
                 RichText::new("提示：默认以当前用户权限运行；查询受保护的系统进程或核心服务可能需要以管理员身份运行。")
@@ -550,9 +544,26 @@ impl ToolboxApp {
                     port,
                     timeout_ms,
                 }),
+                AppAction::RunMtr { host, config } => {
+                    self.dispatch_task(TaskRequest::Mtr { host, config })
+                }
+                AppAction::StopMtr => {
+                    if let Some(request_id) = self.latest_requests.get("mtr").copied()
+                        && self.task_dispatcher.cancel(request_id)
+                    {
+                        self.set_notice(
+                            "已请求停止 MTR，将在当前探测结束后退出",
+                            NoticeTone::Success,
+                        );
+                    }
+                }
                 AppAction::QueryFileLocks { path } => self.dispatch_file_locks(path),
                 AppAction::RefreshPorts => self.dispatch_ports(),
+                AppAction::LoadProcessTree => self.dispatch_process_tree(),
                 AppAction::InspectProcess { pid } => self.dispatch_process(pid),
+                AppAction::InspectProcessCommandLine { pid } => {
+                    self.dispatch_process_command_line(pid)
+                }
                 AppAction::CopyText(text) => context.copy_text(text),
                 AppAction::OpenFileLocation(path) => match open_file_location(&path) {
                     Ok(()) => self.set_notice("已在资源管理器中打开文件位置", NoticeTone::Success),
@@ -619,6 +630,15 @@ impl ToolboxApp {
     fn dispatch_process(&mut self, pid: u32) {
         self.navigate_to("process-inspector");
         self.dispatch_task(TaskRequest::Process { pid });
+    }
+
+    fn dispatch_process_tree(&mut self) {
+        self.navigate_to("process-inspector");
+        self.dispatch_task(TaskRequest::ProcessTree);
+    }
+
+    fn dispatch_process_command_line(&mut self, pid: u32) {
+        self.dispatch_task(TaskRequest::ProcessCommandLine { pid });
     }
 
     fn toggle_context_menu(&mut self, enabled: bool) {
@@ -753,7 +773,7 @@ impl ToolboxApp {
     }
 
     fn persist_settings(&mut self) {
-        normalize_favorite_tools(
+        navigation::normalize_favorite_tools(
             &self.registry.descriptors(),
             &mut self.settings.favorite_tools,
         );
@@ -766,7 +786,7 @@ impl ToolboxApp {
         self.notice = Some(Notice {
             message: message.into(),
             tone,
-            expires_at: Instant::now() + Duration::from_secs(4),
+            expires_at: Instant::now() + overlay::notice_duration(tone),
         });
     }
 
@@ -806,21 +826,6 @@ fn log_runtime_error(error: &AppError) {
 }
 
 /// 仅接受同工具最新请求的事件；旧终态既不路由，也不能清除新请求的忙碌状态依据。
-fn accept_task_event(
-    latest_requests: &mut HashMap<&'static str, RequestId>,
-    tool_id: &'static str,
-    request_id: RequestId,
-    is_finished: bool,
-) -> bool {
-    if latest_requests.get(tool_id).copied() != Some(request_id) {
-        return false;
-    }
-    if is_finished {
-        latest_requests.remove(tool_id);
-    }
-    true
-}
-
 impl eframe::App for ToolboxApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_background_messages(context);
@@ -1132,15 +1137,6 @@ fn home_tool_card(ui: &mut egui::Ui, descriptor: &ToolDescriptor, favorite: bool
 }
 
 /// 按当前注册顺序保留收藏项，清除旧版本遗留的无效或重复工具标识。
-fn normalize_favorite_tools(descriptors: &[ToolDescriptor], favorite_tools: &mut Vec<String>) {
-    let selected: HashSet<_> = favorite_tools.iter().map(String::as_str).collect();
-    *favorite_tools = descriptors
-        .iter()
-        .filter(|descriptor| selected.contains(descriptor.id))
-        .map(|descriptor| descriptor.id.to_owned())
-        .collect();
-}
-
 fn apply_theme(context: &egui::Context, preference: ThemePreference) {
     let preference = match preference {
         ThemePreference::System => egui::ThemePreference::System,
@@ -1154,7 +1150,7 @@ fn apply_theme(context: &egui::Context, preference: ThemePreference) {
 mod tests {
     use std::collections::HashMap;
 
-    use super::{accept_task_event, normalize_favorite_tools};
+    use super::{actions, navigation};
     use crate::tools::build_registry;
 
     #[test]
@@ -1167,7 +1163,7 @@ mod tests {
             "process-inspector".to_owned(),
         ];
 
-        normalize_favorite_tools(&descriptors, &mut favorites);
+        navigation::normalize_favorite_tools(&descriptors, &mut favorites);
 
         assert_eq!(favorites, ["file-lock", "process-inspector"]);
     }
@@ -1175,9 +1171,19 @@ mod tests {
     #[test]
     fn stale_finished_event_does_not_clear_or_route_latest_request() {
         let mut latest = HashMap::from([("port-inspector", 2)]);
-        assert!(!accept_task_event(&mut latest, "port-inspector", 1, true));
+        assert!(!actions::accept_task_event(
+            &mut latest,
+            "port-inspector",
+            1,
+            true
+        ));
         assert_eq!(latest.get("port-inspector"), Some(&2));
-        assert!(accept_task_event(&mut latest, "port-inspector", 2, true));
+        assert!(actions::accept_task_event(
+            &mut latest,
+            "port-inspector",
+            2,
+            true
+        ));
         assert!(!latest.contains_key("port-inspector"));
     }
 }

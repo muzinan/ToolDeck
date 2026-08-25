@@ -21,7 +21,10 @@ use windows::{
 };
 
 use crate::{
-    model::{AppError, ProcessInfo, ProcessSummary},
+    model::{
+        AppError, ProcessCommandLine, ProcessInfo, ProcessSummary, ProcessTreeNode,
+        ProcessTreeSnapshot,
+    },
     platform::windows::wide,
 };
 
@@ -75,6 +78,80 @@ pub fn query_process(pid: u32) -> Result<ProcessInfo, AppError> {
         parent_chain,
         children,
     })
+}
+
+/// 获取全部存活进程的父子关系；路径和命令行留给选中详情按需读取。
+pub fn query_process_tree() -> Result<ProcessTreeSnapshot, AppError> {
+    Ok(build_process_tree(snapshot_processes()?))
+}
+
+fn build_process_tree(processes: Vec<SnapshotProcess>) -> ProcessTreeSnapshot {
+    let visible: HashSet<u32> = processes.iter().map(|process| process.pid).collect();
+    let mut children_by_parent: HashMap<u32, Vec<u32>> = HashMap::new();
+
+    for process in &processes {
+        if visible.contains(&process.parent_pid) {
+            children_by_parent
+                .entry(process.parent_pid)
+                .or_default()
+                .push(process.pid);
+        }
+    }
+    for children in children_by_parent.values_mut() {
+        children.sort_unstable();
+    }
+
+    let mut nodes = processes
+        .into_iter()
+        .map(|process| ProcessTreeNode {
+            pid: process.pid,
+            parent_pid: (process.parent_pid != 0 && visible.contains(&process.parent_pid))
+                .then_some(process.parent_pid),
+            name: process.name,
+            children: children_by_parent.remove(&process.pid).unwrap_or_default(),
+        })
+        .collect::<Vec<_>>();
+    nodes.sort_by(|left, right| {
+        left.name
+            .to_ascii_lowercase()
+            .cmp(&right.name.to_ascii_lowercase())
+            .then(left.pid.cmp(&right.pid))
+    });
+    let mut root_nodes = nodes
+        .iter()
+        .filter(|node| node.parent_pid.is_none())
+        .collect::<Vec<_>>();
+    root_nodes.sort_by(|left, right| {
+        left.name
+            .to_ascii_lowercase()
+            .cmp(&right.name.to_ascii_lowercase())
+            .then(left.pid.cmp(&right.pid))
+    });
+    let roots = root_nodes
+        .into_iter()
+        .map(|node| node.pid)
+        .collect::<Vec<_>>();
+
+    ProcessTreeSnapshot { nodes, roots }
+}
+
+/// 通过 WMI 懒加载指定进程命令行；具体查询保持在平台层，UI 只接收领域模型。
+pub fn query_process_command_line(pid: u32) -> Result<ProcessCommandLine, AppError> {
+    if !process_exists(pid)? {
+        return Err(AppError::ProcessExited(pid));
+    }
+    let result = super::process_wmi::query_process_command_line(pid)?;
+    // WMI 对已退出进程和未公开命令行的存活进程都可能返回空结果，因此用独立快照确认生命周期。
+    if result.command_line.is_none() && !process_exists(pid)? {
+        return Err(AppError::ProcessExited(pid));
+    }
+    Ok(result)
+}
+
+fn process_exists(pid: u32) -> Result<bool, AppError> {
+    Ok(snapshot_processes()?
+        .iter()
+        .any(|process| process.pid == pid))
 }
 
 fn fill_process_paths(processes: &mut [ProcessSummary]) {
@@ -271,7 +348,9 @@ fn process_error(pid: u32, context: &str, error: &windows::core::Error) -> AppEr
 mod tests {
     use std::collections::HashMap;
 
-    use super::{SnapshotProcess, build_parent_chain};
+    use super::{
+        SnapshotProcess, build_parent_chain, build_process_tree, query_process_command_line,
+    };
 
     #[test]
     fn builds_chain_from_root_to_target() {
@@ -319,5 +398,60 @@ mod tests {
         let by_pid: HashMap<u32, &SnapshotProcess> =
             values.iter().map(|item| (item.pid, item)).collect();
         assert_eq!(build_parent_chain(1, &by_pid).len(), 2);
+    }
+
+    #[test]
+    fn builds_orphan_roots_and_stable_name_sorting() {
+        let snapshot = build_process_tree(vec![
+            SnapshotProcess {
+                pid: 30,
+                parent_pid: 999,
+                name: "zeta.exe".into(),
+            },
+            SnapshotProcess {
+                pid: 40,
+                parent_pid: 0,
+                name: "alpha.exe".into(),
+            },
+            SnapshotProcess {
+                pid: 21,
+                parent_pid: 40,
+                name: "child.exe".into(),
+            },
+        ]);
+        assert_eq!(snapshot.roots, [40, 30]);
+        assert_eq!(snapshot.nodes[0].name, "alpha.exe");
+        assert_eq!(snapshot.nodes[0].children, [21]);
+        assert_eq!(snapshot.nodes[2].parent_pid, None);
+    }
+
+    #[test]
+    fn live_process_is_never_misreported_as_exited() {
+        let pid = std::process::id();
+        let result = query_process_command_line(pid);
+
+        assert!(!matches!(
+            result,
+            Err(crate::model::AppError::ProcessExited(_))
+        ));
+        if let Ok(result) = result {
+            assert_eq!(result.pid, pid);
+            assert!(
+                result
+                    .command_line
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty())
+            );
+        }
+    }
+
+    #[test]
+    fn reports_missing_process_with_requested_pid() {
+        let error = query_process_command_line(u32::MAX).expect_err("无效 PID 不应返回命令行");
+
+        assert!(matches!(
+            error,
+            crate::model::AppError::ProcessExited(u32::MAX)
+        ));
     }
 }

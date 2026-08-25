@@ -2,10 +2,11 @@
 //! UI 线程只提交有界请求并消费事件；所有潜在阻塞的 Windows API 调用均由固定工作线程执行。
 
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     thread,
@@ -13,8 +14,9 @@ use std::{
 
 use crate::{
     model::{
-        AppError, DnsRecordType, DnsResult, FileLockResult, NetworkEndpoint, PingAddressFamily,
-        PingSummary, ProcessInfo, TcpProbeResult,
+        AppError, DnsRecordType, DnsResult, FileLockResult, MtrConfig, MtrProgress, MtrResult,
+        NetworkEndpoint, PingAddressFamily, PingSummary, ProcessCommandLine, ProcessInfo,
+        ProcessTreeSnapshot, TcpProbeResult,
     },
     platform::windows,
 };
@@ -24,6 +26,8 @@ pub type RequestId = u64;
 pub const WORKER_THREAD_COUNT: usize = 4;
 pub const REQUEST_QUEUE_CAPACITY: usize = 32;
 
+type CancellationMap = HashMap<&'static str, (RequestId, Arc<AtomicBool>)>;
+
 #[derive(Clone, Debug)]
 pub enum TaskRequest {
     FileLocks {
@@ -31,6 +35,10 @@ pub enum TaskRequest {
     },
     Ports,
     Process {
+        pid: u32,
+    },
+    ProcessTree,
+    ProcessCommandLine {
         pid: u32,
     },
     TerminateProcess {
@@ -53,6 +61,10 @@ pub enum TaskRequest {
         port: u16,
         timeout_ms: u32,
     },
+    Mtr {
+        host: String,
+        config: MtrConfig,
+    },
 }
 
 impl TaskRequest {
@@ -60,10 +72,14 @@ impl TaskRequest {
         match self {
             Self::FileLocks { .. } => "file-lock",
             Self::Ports => "port-inspector",
-            Self::Process { .. } | Self::TerminateProcess { .. } => "process-inspector",
+            Self::Process { .. }
+            | Self::ProcessTree
+            | Self::ProcessCommandLine { .. }
+            | Self::TerminateProcess { .. } => "process-inspector",
             Self::DnsLookup { .. } => "dns-lookup",
             Self::Ping { .. } => "ping",
             Self::TcpProbe { .. } => "tcp-probe",
+            Self::Mtr { .. } => "mtr",
         }
     }
 }
@@ -73,6 +89,7 @@ impl TaskRequest {
 pub struct TaskRequestEnvelope {
     pub request_id: RequestId,
     pub request: TaskRequest,
+    pub cancel: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Debug)]
@@ -80,10 +97,16 @@ pub enum TaskResult {
     FileLocks(Result<FileLockResult, AppError>),
     Ports(Result<Vec<NetworkEndpoint>, AppError>),
     Process(Result<ProcessInfo, AppError>),
+    ProcessTree(Result<ProcessTreeSnapshot, AppError>),
+    ProcessCommandLine {
+        pid: u32,
+        result: Result<ProcessCommandLine, AppError>,
+    },
     ProcessTerminated(Result<u32, AppError>),
     Dns(Result<DnsResult, AppError>),
     Ping(Result<PingSummary, AppError>),
     TcpProbe(Result<TcpProbeResult, AppError>),
+    Mtr(Result<MtrResult, AppError>),
 }
 
 impl TaskResult {
@@ -92,15 +115,22 @@ impl TaskResult {
             Self::FileLocks(Err(error))
             | Self::Ports(Err(error))
             | Self::Process(Err(error))
+            | Self::ProcessTree(Err(error))
             | Self::ProcessTerminated(Err(error)) => Some(error),
-            Self::Dns(Err(error)) | Self::Ping(Err(error)) | Self::TcpProbe(Err(error)) => {
-                Some(error)
-            }
+            Self::ProcessCommandLine {
+                result: Err(error), ..
+            } => Some(error),
+            Self::Dns(Err(error))
+            | Self::Ping(Err(error))
+            | Self::TcpProbe(Err(error))
+            | Self::Mtr(Err(error)) => Some(error),
             Self::FileLocks(Ok(_))
             | Self::Ports(Ok(_))
             | Self::Process(Ok(_))
+            | Self::ProcessTree(Ok(_))
             | Self::ProcessTerminated(Ok(_)) => None,
-            Self::Dns(Ok(_)) | Self::Ping(Ok(_)) | Self::TcpProbe(Ok(_)) => None,
+            Self::ProcessCommandLine { result: Ok(_), .. } => None,
+            Self::Dns(Ok(_)) | Self::Ping(Ok(_)) | Self::TcpProbe(Ok(_)) | Self::Mtr(Ok(_)) => None,
         }
     }
 }
@@ -115,6 +145,7 @@ pub enum TaskEvent {
         total: Option<u64>,
     },
     Finished(TaskResult),
+    MtrProgress(MtrProgress),
 }
 
 /// 事件信封携带请求与目标工具标识，UI 可在进入工具模块前完成最新请求判定。
@@ -130,6 +161,7 @@ pub struct TaskEventEnvelope {
 pub struct TaskDispatcher {
     sender: mpsc::SyncSender<TaskRequestEnvelope>,
     next_request_id: Arc<AtomicU64>,
+    cancellations: Arc<Mutex<CancellationMap>>,
 }
 
 impl TaskDispatcher {
@@ -154,16 +186,54 @@ impl TaskDispatcher {
             Self {
                 sender: request_sender,
                 next_request_id: Arc::new(AtomicU64::new(1)),
+                cancellations: Arc::new(Mutex::new(HashMap::new())),
             },
             event_receiver,
         ))
     }
 
     pub fn dispatch(&self, request: TaskRequest) -> Result<RequestId, AppError> {
-        try_enqueue(&self.sender, &self.next_request_id, request)
+        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        let target_tool_id = request.target_tool_id();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let envelope = TaskRequestEnvelope {
+            request_id,
+            request,
+            cancel: Arc::clone(&cancel),
+        };
+        self.sender
+            .try_send(envelope)
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => {
+                    AppError::QueueFull("后台任务队列已满，请稍后重试。".into())
+                }
+                mpsc::TrySendError::Disconnected(_) => {
+                    AppError::WorkerBusy("后台工作线程已停止，请重新启动程序。".into())
+                }
+            })?;
+        if let Ok(mut cancellations) = self.cancellations.lock() {
+            cancellations.insert(target_tool_id, (request_id, cancel));
+        }
+        Ok(request_id)
+    }
+
+    /// 请求长任务在下一次探测边界停止。
+    pub fn cancel(&self, request_id: RequestId) -> bool {
+        let Ok(cancellations) = self.cancellations.lock() else {
+            return false;
+        };
+        let Some((_, token)) = cancellations
+            .values()
+            .find(|(candidate, _)| *candidate == request_id)
+        else {
+            return false;
+        };
+        token.store(true, Ordering::Release);
+        true
     }
 }
 
+#[cfg(test)]
 fn try_enqueue(
     sender: &mpsc::SyncSender<TaskRequestEnvelope>,
     next_request_id: &AtomicU64,
@@ -173,6 +243,7 @@ fn try_enqueue(
     let envelope = TaskRequestEnvelope {
         request_id,
         request,
+        cancel: Arc::new(AtomicBool::new(false)),
     };
     sender.try_send(envelope).map_err(|error| match error {
         mpsc::TrySendError::Full(_) => AppError::QueueFull("后台任务队列已满，请稍后重试。".into()),
@@ -203,6 +274,7 @@ fn worker_loop(
             &sender,
             envelope.request_id,
             target_tool_id,
+            &envelope.cancel,
         );
         for event in ordinary_task_events(envelope.request_id, target_tool_id, result) {
             // 接收端关闭表示 GUI 正在退出，此时结束当前工作线程，不再消费后续请求。
@@ -230,6 +302,11 @@ fn execute(request: TaskRequest) -> TaskResult {
         TaskRequest::FileLocks { path } => TaskResult::FileLocks(windows::query_file_locks(&path)),
         TaskRequest::Ports => TaskResult::Ports(windows::query_network_endpoints()),
         TaskRequest::Process { pid } => TaskResult::Process(windows::query_process(pid)),
+        TaskRequest::ProcessTree => TaskResult::ProcessTree(windows::query_process_tree()),
+        TaskRequest::ProcessCommandLine { pid } => TaskResult::ProcessCommandLine {
+            pid,
+            result: windows::query_process_command_line(pid),
+        },
         TaskRequest::TerminateProcess { pid } => {
             TaskResult::ProcessTerminated(windows::terminate_process(pid).map(|()| pid))
         }
@@ -256,6 +333,7 @@ fn execute(request: TaskRequest) -> TaskResult {
             port,
             timeout_ms,
         } => TaskResult::TcpProbe(windows::tcp_probe(&host, port, timeout_ms)),
+        TaskRequest::Mtr { host, config } => TaskResult::Mtr(windows::mtr_host(&host, &config)),
     }
 }
 
@@ -264,6 +342,7 @@ fn execute_with_progress(
     sender: &mpsc::Sender<TaskEventEnvelope>,
     request_id: RequestId,
     target_tool_id: &'static str,
+    cancel: &AtomicBool,
 ) -> TaskResult {
     match request {
         TaskRequest::Ping {
@@ -297,6 +376,18 @@ fn execute_with_progress(
                         completed: Some(u64::from(completed)),
                         total: Some(u64::from(total)),
                     },
+                });
+            },
+        )),
+        TaskRequest::Mtr { host, config } => TaskResult::Mtr(windows::mtr_host_with_progress(
+            &host,
+            &config,
+            cancel,
+            |progress| {
+                let _ = sender.send(TaskEventEnvelope {
+                    request_id,
+                    target_tool_id,
+                    event: TaskEvent::MtrProgress(progress),
                 });
             },
         )),

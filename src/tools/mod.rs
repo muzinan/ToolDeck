@@ -2,6 +2,7 @@
 //! 新工具只需实现 ToolModule 并在 build_registry 注册，即可由导航、搜索和首页自动发现。
 
 mod file_lock;
+mod mtr;
 mod network_tools;
 mod port_inspector;
 mod process_inspector;
@@ -11,7 +12,10 @@ use std::time::Instant;
 
 use eframe::egui;
 
-use crate::core::{actions::AppAction, invocation::ToolPayload, worker::TaskResult};
+use crate::{
+    core::{actions::AppAction, invocation::ToolPayload, worker::TaskResult},
+    model::MtrProgress,
+};
 
 pub use registry::{ToolDescriptor, ToolIcon, ToolRegistry};
 
@@ -33,13 +37,14 @@ pub trait ToolModule: Send {
         _total: Option<u64>,
     ) {
     }
+    fn handle_mtr_progress(&mut self, _progress: MtrProgress) {}
     fn set_busy(&mut self, busy: bool);
     fn poll_actions(&mut self, _now: Instant) -> Vec<AppAction> {
         Vec::new()
     }
 }
 
-/// V0.2.0 的内建工具清单。这里是新增模块唯一需要接入外壳的注册位置。
+/// V0.3.0 的内建工具清单。这里是新增模块唯一需要接入外壳的注册位置。
 pub fn build_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::default();
     registry.register(Box::new(file_lock::FileLockTool::default()));
@@ -48,5 +53,6 @@ pub fn build_registry() -> ToolRegistry {
     registry.register(Box::new(network_tools::DnsLookupTool::default()));
     registry.register(Box::new(network_tools::PingTool::default()));
     registry.register(Box::new(network_tools::TcpProbeTool::default()));
+    registry.register(Box::new(mtr::MtrTool::default()));
     registry
 }

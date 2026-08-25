@@ -27,6 +27,7 @@ pub enum ToolIcon {
     Dns,
     Ping,
     TcpProbe,
+    Mtr,
 }
 
 impl ToolCategory {
@@ -206,7 +207,7 @@ mod tests {
     #[test]
     fn registry_exposes_all_v0_tools() {
         let registry = build_registry();
-        assert_eq!(registry.descriptors().len(), 6);
+        assert_eq!(registry.descriptors().len(), 7);
         assert_eq!(registry.categories().len(), 3);
     }
 
@@ -281,6 +282,14 @@ mod tests {
                 .unwrap()
                 .icon,
             ToolIcon::TcpProbe
+        );
+        assert_eq!(
+            descriptors
+                .iter()
+                .find(|tool| tool.id == "mtr")
+                .unwrap()
+                .icon,
+            ToolIcon::Mtr
         );
     }
 }

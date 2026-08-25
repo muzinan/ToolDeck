@@ -3,7 +3,8 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use std::{
-    net::{IpAddr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs},
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
 
@@ -17,8 +18,9 @@ use windows::{
                 DNS_TYPE_TEXT, DnsFree, DnsFreeRecordList, DnsQuery_A,
             },
             IpHelper::{
-                ICMP_ECHO_REPLY, ICMPV6_ECHO_REPLY_LH, IP_OPTION_INFORMATION, Icmp6CreateFile,
-                Icmp6SendEcho2, IcmpCloseHandle, IcmpCreateFile, IcmpSendEcho,
+                ICMP_ECHO_REPLY, ICMPV6_ECHO_REPLY_LH, IP_HOP_LIMIT_EXCEEDED,
+                IP_OPTION_INFORMATION, Icmp6CreateFile, Icmp6SendEcho2, IcmpCloseHandle,
+                IcmpCreateFile, IcmpSendEcho,
             },
         },
         Networking::WinSock::{ADDRESS_FAMILY, AF_INET6, IN6_ADDR, IN6_ADDR_0, SOCKADDR_IN6},
@@ -27,8 +29,8 @@ use windows::{
 };
 
 use crate::model::{
-    AppError, DnsRecord, DnsRecordType, DnsResult, PingAddressFamily, PingSample, PingSummary,
-    TcpProbeAttempt, TcpProbeResult,
+    AppError, DnsRecord, DnsRecordType, DnsResult, MtrConfig, MtrHopStats, MtrProgress, MtrResult,
+    PingAddressFamily, PingSample, PingSummary, TcpProbeAttempt, TcpProbeResult,
 };
 
 /// 使用 Windows 系统 DNS 查询记录，支持系统缓存和绕过缓存两种模式。
@@ -258,18 +260,31 @@ fn ping_once(
     timeout_ms: u32,
     payload_size: u16,
 ) -> Result<Option<u8>, String> {
+    ping_once_with_ttl(address, timeout_ms, payload_size, None)
+}
+
+fn ping_once_with_ttl(
+    address: SocketAddr,
+    timeout_ms: u32,
+    payload_size: u16,
+    ttl: Option<u8>,
+) -> Result<Option<u8>, String> {
     let payload = vec![0_u8; payload_size as usize];
     let mut reply = vec![0_u8; std::mem::size_of::<ICMP_ECHO_REPLY>() + payload.len() + 64];
     match address.ip() {
         IpAddr::V4(value) => {
             let handle = unsafe { IcmpCreateFile() }.map_err(|error| error.to_string())?;
+            let options = ttl.map(|value| IP_OPTION_INFORMATION {
+                Ttl: value,
+                ..Default::default()
+            });
             let status = unsafe {
                 IcmpSendEcho(
                     handle,
                     u32::from(value),
                     payload.as_ptr().cast(),
                     payload_size,
-                    None,
+                    options.as_ref().map(|value| value as *const _),
                     reply.as_mut_ptr().cast(),
                     reply.len() as u32,
                     timeout_ms,
@@ -296,7 +311,10 @@ fn ping_once(
                 },
                 ..Default::default()
             };
-            let options = IP_OPTION_INFORMATION::default();
+            let options = IP_OPTION_INFORMATION {
+                Ttl: ttl.unwrap_or_default(),
+                ..Default::default()
+            };
             let status = unsafe {
                 Icmp6SendEcho2(
                     handle,
@@ -322,6 +340,310 @@ fn ping_once(
                 return Err(format!("ICMPv6 响应状态 {}", response.Status));
             }
             Ok(None)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MtrProbeKind {
+    Transit,
+    Destination,
+    NoResponse,
+    OtherError(u32),
+}
+
+impl MtrProbeKind {
+    fn status_text(self) -> String {
+        match self {
+            Self::Transit => "中间跳".into(),
+            Self::Destination => "目标响应".into(),
+            Self::NoResponse => "无响应".into(),
+            Self::OtherError(status) => format!("ICMP 状态 {status}"),
+        }
+    }
+
+    fn reached_destination(self) -> bool {
+        self == Self::Destination
+    }
+}
+
+struct MtrProbe {
+    address: Option<String>,
+    elapsed_ms: Option<f64>,
+    kind: MtrProbeKind,
+}
+
+impl MtrProbe {
+    fn no_response() -> Self {
+        Self {
+            address: None,
+            elapsed_ms: None,
+            kind: MtrProbeKind::NoResponse,
+        }
+    }
+}
+
+fn classify_mtr_reply_status(status: u32) -> MtrProbeKind {
+    match status {
+        0 => MtrProbeKind::Destination,
+        IP_HOP_LIMIT_EXCEEDED => MtrProbeKind::Transit,
+        status => MtrProbeKind::OtherError(status),
+    }
+}
+
+fn ipv4_to_win32_address(address: Ipv4Addr) -> u32 {
+    u32::from_ne_bytes(address.octets())
+}
+
+fn ipv4_from_win32_address(address: u32) -> Ipv4Addr {
+    Ipv4Addr::from(address.to_ne_bytes())
+}
+
+fn ipv6_from_win32_words(words: [u16; 8]) -> Ipv6Addr {
+    let mut address_bytes = [0_u8; 16];
+    for (index, word) in words.iter().enumerate() {
+        let offset = index * 2;
+        address_bytes[offset..offset + 2].copy_from_slice(&word.to_ne_bytes());
+    }
+    Ipv6Addr::from(address_bytes)
+}
+
+fn apply_mtr_probe(hop: &mut MtrHopStats, probe: MtrProbe) -> bool {
+    let reached_destination = probe.kind.reached_destination();
+    let status = probe.kind.status_text();
+    hop.record(probe.address, probe.elapsed_ms, &status);
+    reached_destination
+}
+
+fn mtr_probe_batch(
+    address: SocketAddr,
+    timeout_ms: u32,
+    payload_size: u16,
+    ttl: u8,
+    count: u8,
+    concurrency: u8,
+) -> Vec<Result<MtrProbe, String>> {
+    let mut remaining = count;
+    let mut outcomes = Vec::with_capacity(usize::from(count));
+    while remaining > 0 {
+        let batch_size = remaining.min(concurrency);
+        let batch = std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(usize::from(batch_size));
+            for _ in 0..batch_size {
+                handles.push(scope.spawn(|| mtr_probe(address, timeout_ms, payload_size, ttl)));
+            }
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|_| Err("MTR 探测线程异常退出".into()))
+                })
+                .collect::<Vec<_>>()
+        });
+        outcomes.extend(batch);
+        remaining -= batch_size;
+    }
+    outcomes
+}
+
+fn mtr_probe(
+    address: SocketAddr,
+    timeout_ms: u32,
+    payload_size: u16,
+    ttl: u8,
+) -> Result<MtrProbe, String> {
+    let payload = vec![0_u8; payload_size as usize];
+    let started = Instant::now();
+    match address.ip() {
+        IpAddr::V4(value) => {
+            let mut reply = vec![0_u8; std::mem::size_of::<ICMP_ECHO_REPLY>() + payload.len() + 64];
+            let handle = unsafe { IcmpCreateFile() }.map_err(|error| error.to_string())?;
+            let options = IP_OPTION_INFORMATION {
+                Ttl: ttl,
+                ..Default::default()
+            };
+            let status = unsafe {
+                IcmpSendEcho(
+                    handle,
+                    ipv4_to_win32_address(value),
+                    payload.as_ptr().cast(),
+                    payload_size,
+                    Some(&options as *const _),
+                    reply.as_mut_ptr().cast(),
+                    reply.len() as u32,
+                    timeout_ms,
+                )
+            };
+            unsafe { IcmpCloseHandle(handle) }.ok();
+            if status == 0 {
+                return Ok(MtrProbe::no_response());
+            }
+            let response = unsafe { &*(reply.as_ptr().cast::<ICMP_ECHO_REPLY>()) };
+            Ok(MtrProbe {
+                address: Some(ipv4_from_win32_address(response.Address).to_string()),
+                elapsed_ms: Some(started.elapsed().as_secs_f64() * 1000.0),
+                kind: classify_mtr_reply_status(response.Status),
+            })
+        }
+        IpAddr::V6(value) => {
+            let mut reply =
+                vec![0_u8; std::mem::size_of::<ICMPV6_ECHO_REPLY_LH>() + payload.len() + 64];
+            let handle = unsafe { Icmp6CreateFile() }.map_err(|error| error.to_string())?;
+            let destination = SOCKADDR_IN6 {
+                sin6_family: ADDRESS_FAMILY(AF_INET6.0),
+                sin6_addr: IN6_ADDR {
+                    u: IN6_ADDR_0 {
+                        Byte: value.octets(),
+                    },
+                },
+                ..Default::default()
+            };
+            let options = IP_OPTION_INFORMATION {
+                Ttl: ttl,
+                ..Default::default()
+            };
+            let status = unsafe {
+                Icmp6SendEcho2(
+                    handle,
+                    None,
+                    None,
+                    None,
+                    std::ptr::null(),
+                    &destination,
+                    payload.as_ptr().cast(),
+                    payload_size,
+                    Some(&options),
+                    reply.as_mut_ptr().cast(),
+                    reply.len() as u32,
+                    timeout_ms,
+                )
+            };
+            unsafe { IcmpCloseHandle(handle) }.ok();
+            if status == 0 {
+                return Ok(MtrProbe::no_response());
+            }
+            let response = unsafe { &*(reply.as_ptr().cast::<ICMPV6_ECHO_REPLY_LH>()) };
+            let address_words =
+                unsafe { std::ptr::addr_of!(response.Address.sin6_addr).read_unaligned() };
+            Ok(MtrProbe {
+                address: Some(ipv6_from_win32_words(address_words).to_string()),
+                elapsed_ms: Some(started.elapsed().as_secs_f64() * 1000.0),
+                kind: classify_mtr_reply_status(response.Status),
+            })
+        }
+    }
+}
+
+/// 使用 Windows 原生 ICMP 按 TTL 逐跳探测，并通过回调持续返回聚合结果。
+pub fn mtr_host(host: &str, config: &MtrConfig) -> Result<MtrResult, AppError> {
+    mtr_host_with_progress(host, config, &AtomicBool::new(false), |_| {})
+}
+
+pub fn mtr_host_with_progress<F>(
+    host: &str,
+    config: &MtrConfig,
+    cancel: &AtomicBool,
+    mut on_progress: F,
+) -> Result<MtrResult, AppError>
+where
+    F: FnMut(MtrProgress),
+{
+    config.validate().map_err(AppError::InvalidInput)?;
+    let host = host.trim();
+    if host.is_empty() {
+        return Err(AppError::InvalidInput("主机名不能为空。".into()));
+    }
+    let address = (host, 0)
+        .to_socket_addrs()
+        .map_err(|error| AppError::NameResolution(format!("{host}：{error}")))?
+        .find(|value| match config.family {
+            PingAddressFamily::Auto => true,
+            PingAddressFamily::V4 => value.is_ipv4(),
+            PingAddressFamily::V6 => value.is_ipv6(),
+        })
+        .ok_or_else(|| AppError::NameResolution("没有可用的地址族。".into()))?;
+    let mut hops = (1..=config.max_hops)
+        .map(MtrHopStats::new)
+        .collect::<Vec<_>>();
+    let mut round = 0;
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            return Ok(MtrResult {
+                host: host.to_owned(),
+                rounds: round,
+                stopped: true,
+                hops,
+            });
+        }
+        round += 1;
+        for hop_index in 0..hops.len() {
+            let hop_number = hops[hop_index].hop;
+            let mut reached_destination = false;
+            for probe in mtr_probe_batch(
+                address,
+                config.timeout_ms,
+                config.payload_size,
+                hop_number,
+                config.probes_per_hop,
+                config.concurrency,
+            ) {
+                if cancel.load(Ordering::Acquire) {
+                    return Ok(MtrResult {
+                        host: host.to_owned(),
+                        rounds: round - 1,
+                        stopped: true,
+                        hops,
+                    });
+                }
+                let probe = probe.map_err(|code| AppError::WindowsApi {
+                    context: "ICMP MTR 探测失败".into(),
+                    code,
+                })?;
+                {
+                    let hop = &mut hops[hop_index];
+                    reached_destination |= apply_mtr_probe(hop, probe);
+                    if config.resolve_hostnames
+                        && let Some(address) = &hop.address
+                        && hop.hostname.is_none()
+                    {
+                        hop.hostname = query_dns(address, DnsRecordType::Ptr, false)
+                            .ok()
+                            .and_then(|result| result.records.into_iter().next())
+                            .map(|record| record.value);
+                    }
+                }
+                on_progress(MtrProgress {
+                    host: host.to_owned(),
+                    round,
+                    hops: hops.clone(),
+                });
+            }
+            if reached_destination {
+                break;
+            }
+        }
+        if config.total_rounds.is_some_and(|limit| round >= limit) {
+            return Ok(MtrResult {
+                host: host.to_owned(),
+                rounds: round,
+                stopped: false,
+                hops,
+            });
+        }
+        let mut remaining = config.interval_ms;
+        while remaining > 0 {
+            if cancel.load(Ordering::Acquire) {
+                return Ok(MtrResult {
+                    host: host.to_owned(),
+                    rounds: round,
+                    stopped: true,
+                    hops,
+                });
+            }
+            let slice = remaining.min(50);
+            std::thread::sleep(Duration::from_millis(u64::from(slice)));
+            remaining -= slice;
         }
     }
 }
@@ -375,9 +697,102 @@ pub fn tcp_probe(host: &str, port: u16, timeout_ms: u32) -> Result<TcpProbeResul
 
 #[cfg(test)]
 mod tests {
-    use std::{net::TcpListener, thread};
+    use std::{
+        net::{Ipv4Addr, Ipv6Addr, TcpListener},
+        thread,
+    };
 
-    use super::tcp_probe;
+    use super::{
+        IP_HOP_LIMIT_EXCEEDED, MtrHopStats, MtrProbe, MtrProbeKind, apply_mtr_probe,
+        classify_mtr_reply_status, ipv4_from_win32_address, ipv4_to_win32_address,
+        ipv6_from_win32_words, tcp_probe,
+    };
+
+    #[test]
+    fn mtr_reply_status_distinguishes_transit_and_destination() {
+        assert_eq!(
+            classify_mtr_reply_status(IP_HOP_LIMIT_EXCEEDED),
+            MtrProbeKind::Transit
+        );
+        assert_eq!(classify_mtr_reply_status(0), MtrProbeKind::Destination);
+        assert_eq!(
+            classify_mtr_reply_status(11_003),
+            MtrProbeKind::OtherError(11_003)
+        );
+    }
+
+    #[test]
+    fn mtr_no_response_increases_loss_without_increasing_received_count() {
+        let mut hop = MtrHopStats::new(1);
+
+        assert!(!apply_mtr_probe(&mut hop, MtrProbe::no_response()));
+
+        assert_eq!(hop.sent, 1);
+        assert_eq!(hop.received, 0);
+        assert_eq!(hop.loss_percent(), 100.0);
+    }
+
+    #[test]
+    fn mtr_ipv4_win32_address_round_trip_preserves_network_bytes() {
+        let address = Ipv4Addr::new(192, 0, 2, 10);
+        let raw = ipv4_to_win32_address(address);
+
+        assert_eq!(raw.to_ne_bytes(), address.octets());
+        assert_eq!(ipv4_from_win32_address(raw), address);
+    }
+
+    #[test]
+    fn mtr_ipv6_packed_words_preserve_address_bytes() {
+        let address = "2001:db8:1:2:3:4:5:6".parse::<Ipv6Addr>().unwrap();
+        let bytes = address.octets();
+        let mut words = [0_u16; 8];
+        for (index, word) in words.iter_mut().enumerate() {
+            let offset = index * 2;
+            *word = u16::from_ne_bytes([bytes[offset], bytes[offset + 1]]);
+        }
+
+        assert_eq!(ipv6_from_win32_words(words), address);
+    }
+
+    #[test]
+    fn mtr_hop_aggregation_stops_after_destination_and_keeps_ttls_independent() {
+        let repeated_address = Some("192.0.2.1".to_owned());
+        let batches = [
+            vec![MtrProbe {
+                address: repeated_address.clone(),
+                elapsed_ms: Some(10.0),
+                kind: MtrProbeKind::Transit,
+            }],
+            vec![MtrProbe {
+                address: repeated_address,
+                elapsed_ms: Some(12.0),
+                kind: MtrProbeKind::Destination,
+            }],
+            vec![MtrProbe {
+                address: Some("192.0.2.3".into()),
+                elapsed_ms: Some(14.0),
+                kind: MtrProbeKind::Transit,
+            }],
+        ];
+        let mut hops = (1..=3).map(MtrHopStats::new).collect::<Vec<_>>();
+
+        for (hop, probes) in hops.iter_mut().zip(batches) {
+            let mut reached_destination = false;
+            for probe in probes {
+                reached_destination |= apply_mtr_probe(hop, probe);
+            }
+            if reached_destination {
+                break;
+            }
+        }
+
+        assert_eq!(hops[0].sent, 1);
+        assert_eq!(hops[1].sent, 1);
+        assert_eq!(hops[2].sent, 0);
+        assert_eq!(hops[0].address, hops[1].address);
+        assert_eq!(hops[0].avg_ms, Some(10.0));
+        assert_eq!(hops[1].avg_ms, Some(12.0));
+    }
 
     #[test]
     fn tcp_probe_connects_to_a_local_listener() {

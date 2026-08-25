@@ -34,6 +34,37 @@ pub struct ProcessInfo {
     pub children: Vec<ProcessSummary>,
 }
 
+/// 进程关系页使用的单个树节点。命令行不放在快照中，避免刷新时批量读取敏感信息。
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ProcessTreeNode {
+    /// Windows 进程标识符。
+    pub pid: u32,
+    /// Toolhelp 快照记录的父进程标识符；没有可见父进程时为 `None`。
+    pub parent_pid: Option<u32>,
+    /// 进程映像名称。
+    pub name: String,
+    /// 当前快照中可见的直接子进程 PID，按稳定顺序排列。
+    pub children: Vec<u32>,
+}
+
+/// 一次一致的全量进程关系快照。
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ProcessTreeSnapshot {
+    /// 快照中的全部节点，按名称和 PID 稳定排序。
+    pub nodes: Vec<ProcessTreeNode>,
+    /// 根节点 PID；父进程不可见或为 0 的进程都列在这里。
+    pub roots: Vec<u32>,
+}
+
+/// WMI 懒加载返回的命令行结果。
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ProcessCommandLine {
+    /// 进程 PID。
+    pub pid: u32,
+    /// WMI `Win32_Process.CommandLine`；字段缺失时为空。
+    pub command_line: Option<String>,
+}
+
 impl ProcessInfo {
     pub fn summary(&self) -> ProcessSummary {
         ProcessSummary {

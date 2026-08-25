@@ -537,11 +537,11 @@ pub fn paint_tool_icon(
             painter.circle_filled(left, size * 0.09, color);
             painter.circle_filled(right, size * 0.09, color);
         }
-        ToolIcon::Dns | ToolIcon::Ping | ToolIcon::TcpProbe => {
+        ToolIcon::Dns | ToolIcon::Ping | ToolIcon::TcpProbe | ToolIcon::Mtr => {
             painter.circle_stroke(rect.center(), size * 0.28, stroke);
             painter.line_segment([rect.left_center(), rect.right_center()], stroke);
             painter.line_segment([rect.center_top(), rect.center_bottom()], stroke);
-            if matches!(icon, ToolIcon::TcpProbe) {
+            if matches!(icon, ToolIcon::TcpProbe | ToolIcon::Mtr) {
                 painter.line_segment([rect.left_bottom(), rect.right_top()], stroke);
             }
         }

@@ -161,7 +161,7 @@ impl ToolInvocation {
                     AppError::InvalidInput("process-inspector 需要 --pid。".into())
                 })?,
             },
-            "dns-lookup" | "ping" => ToolPayload::Host {
+            "dns-lookup" | "ping" | "mtr" => ToolPayload::Host {
                 host: host
                     .ok_or_else(|| AppError::InvalidInput(format!("{tool_id} 需要 --host。")))?,
             },
@@ -320,5 +320,15 @@ mod tests {
                 port: 443
             }
         );
+        let mtr = ToolInvocation::parse([
+            OsString::from("--tool"),
+            OsString::from("mtr"),
+            OsString::from("--host"),
+            OsString::from("example.com"),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(mtr.tool_id, "mtr");
+        assert!(matches!(mtr.payload, ToolPayload::Host { .. }));
     }
 }

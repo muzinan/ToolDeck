@@ -30,11 +30,20 @@ pub enum AppAction {
         port: u16,
         timeout_ms: u32,
     },
+    RunMtr {
+        host: String,
+        config: crate::model::MtrConfig,
+    },
+    StopMtr,
     QueryFileLocks {
         path: PathBuf,
     },
     RefreshPorts,
+    LoadProcessTree,
     InspectProcess {
+        pid: u32,
+    },
+    InspectProcessCommandLine {
         pid: u32,
     },
     CopyText(String),

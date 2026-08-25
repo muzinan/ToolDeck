@@ -1,7 +1,10 @@
 //! 进程关系工具模块。
-//! 使用父进程链解释进程来源；命令行字段在当前版本明确标注为未读取，避免依赖未公开 NT API。
+//! 默认加载进程树并按需读取详情；命令行通过公开 WMI 接口在后台懒加载。
 
-use std::path::PathBuf;
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
 
 use eframe::egui::{self, RichText};
 
@@ -11,7 +14,10 @@ use crate::{
         invocation::{ToolInvocation, ToolPayload},
         worker::TaskResult,
     },
-    model::{AppError, ProcessInfo, ProcessSummary},
+    model::{
+        AppError, ProcessCommandLine, ProcessInfo, ProcessSummary, ProcessTreeNode,
+        ProcessTreeSnapshot,
+    },
     tools::{
         ToolModule, ToolUiContext,
         file_lock::{empty_state, error_state, heading},
@@ -23,8 +29,23 @@ use crate::{
 #[derive(Default)]
 pub struct ProcessInspectorTool {
     pid_input: String,
+    tree_filter: String,
+    tree: Option<Result<ProcessTreeSnapshot, AppError>>,
+    tree_requested: bool,
+    tree_refresh_pending: bool,
+    expanded: HashSet<u32>,
+    selected_pid: Option<u32>,
     result: Option<Result<ProcessInfo, AppError>>,
+    command_line_state: HashMap<u32, CommandLineState>,
+    pending_command_line: Option<u32>,
     busy: bool,
+}
+
+#[derive(Clone, Debug)]
+enum CommandLineState {
+    Loading,
+    Ready(Option<String>),
+    Failed(String),
 }
 
 impl ToolModule for ProcessInspectorTool {
@@ -50,91 +71,95 @@ impl ToolModule for ProcessInspectorTool {
 
     fn ui(&mut self, ui: &mut egui::Ui, _context: ToolUiContext) -> Vec<AppAction> {
         let mut actions = Vec::new();
+        if !self.tree_requested {
+            self.tree_requested = true;
+            self.tree_refresh_pending = true;
+            actions.push(AppAction::LoadProcessTree);
+        }
         heading(
             ui,
             "进程关系",
-            "通过 Toolhelp 快照查看进程详情与完整父进程链，追溯进程启动来源。",
+            "默认加载全部存活进程并以树形展示；选中节点后在右侧读取详情和命令行参数。",
         );
         ui.add_space(ui::SPACE_16);
         ui::card(ui, |ui| {
-            match ui::action_layout(ui.available_width()) {
-                ui::ActionLayout::Horizontal => {
-                    let mut submit = false;
-                    ui.horizontal(|ui| {
-                        let button_width = 110.0;
-                        let input_width =
-                            (ui.available_width() - button_width - ui.spacing().item_spacing.x)
-                                .max(160.0);
-                        let input = ui.add_sized(
-                            [input_width, ui::CONTROL_HEIGHT],
-                            ui::text_input(&mut self.pid_input, "输入目标进程 PID (如 1234)"),
-                        );
-                        submit |= input.lost_focus()
-                            && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                        if ui::primary_button_sized(
-                            ui,
-                            if self.busy {
-                                "重新查询"
-                            } else {
-                                "查看进程"
-                            },
-                            [button_width, ui::CONTROL_HEIGHT],
-                        )
-                        .clicked()
-                        {
-                            submit = true;
-                        }
-                    });
-                    if submit {
-                        actions.extend(self.start_query());
-                    }
+            ui.horizontal_wrapped(|ui| {
+                ui.add_sized(
+                    [ui.available_width().max(120.0), ui::CONTROL_HEIGHT],
+                    ui::text_input(&mut self.tree_filter, "筛选名称或 PID"),
+                );
+                if ui::secondary_button(ui, "刷新全部进程").clicked() {
+                    self.tree_requested = true;
+                    self.tree_refresh_pending = true;
+                    actions.push(AppAction::LoadProcessTree);
                 }
-                ui::ActionLayout::Vertical => {
-                    let input = ui.add_sized(
-                        [ui.available_width(), ui::CONTROL_HEIGHT],
-                        ui::text_input(&mut self.pid_input, "输入目标进程 PID (如 1234)"),
-                    );
-                    let submit =
-                        input.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                    ui.add_space(ui::SPACE_8);
-                    if ui::primary_button(
-                        ui,
-                        if self.busy {
-                            "重新查询"
-                        } else {
-                            "查看进程"
-                        },
-                    )
-                    .clicked()
-                        || submit
-                    {
-                        actions.extend(self.start_query());
-                    }
+            });
+            ui.add_space(ui::SPACE_8);
+            ui.horizontal_wrapped(|ui| {
+                let input = ui.add_sized(
+                    [ui.available_width().clamp(160.0, 360.0), ui::CONTROL_HEIGHT],
+                    ui::text_input(&mut self.pid_input, "输入 PID 查看详情"),
+                );
+                let submit =
+                    input.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                if ui::primary_button(ui, "查看指定进程").clicked() || submit {
+                    actions.extend(self.start_query());
                 }
-            };
+            });
         });
 
         if self.busy {
             ui.add_space(ui::SPACE_16);
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label(RichText::new("正在检索系统进程树快照与进程信息...").size(13.5));
+                ui.label(RichText::new("正在读取进程信息...").size(13.5));
             });
         }
 
-        if let Some(result) = &self.result {
-            ui.add_space(ui::SPACE_16);
-            match result {
-                Ok(process) => self.render_process(ui, process, &mut actions),
-                Err(error) => error_state(ui, error),
+        ui.add_space(ui::SPACE_16);
+        match &self.tree {
+            Some(Ok(snapshot)) => {
+                let nodes = snapshot
+                    .nodes
+                    .iter()
+                    .cloned()
+                    .map(|node| (node.pid, node))
+                    .collect::<HashMap<_, _>>();
+                let roots = snapshot.roots.clone();
+                let detail_width = ui.available_width();
+                if detail_width >= 760.0 {
+                    ui.columns(2, |columns| {
+                        columns[0].set_min_width(300.0);
+                        ui::card(&mut columns[0], |ui| {
+                            ui.label(RichText::new("全部进程").strong().size(15.0));
+                            ui.add_space(ui::SPACE_8);
+                            for pid in &roots {
+                                self.render_tree_node(ui, &nodes, *pid, 0, &mut actions);
+                            }
+                        });
+                        ui::card(&mut columns[1], |ui| {
+                            self.render_selected_detail(ui, &mut actions);
+                        });
+                    });
+                } else {
+                    ui::card(ui, |ui| {
+                        ui.label(RichText::new("全部进程").strong().size(15.0));
+                        ui.add_space(ui::SPACE_8);
+                        for pid in &roots {
+                            self.render_tree_node(ui, &nodes, *pid, 0, &mut actions);
+                        }
+                    });
+                    ui.add_space(ui::SPACE_16);
+                    ui::card(ui, |ui| self.render_selected_detail(ui, &mut actions));
+                }
             }
-        } else if !self.busy {
-            ui.add_space(36.0);
-            empty_state(
+            Some(Err(error)) => error_state(ui, error),
+            None if !self.busy => empty_state(
                 ui,
-                "输入 PID 查看进程来源与层级",
-                "支持直接输入 PID 查询；端口占用与文件占用页面中的进程名称也可一键点击跳转至此。",
-            )
+                "正在准备全部进程树",
+                "首次打开会在后台读取当前存活进程；页面不会阻塞。",
+            ),
+            None => {}
         }
         actions
     }
@@ -143,6 +168,7 @@ impl ToolModule for ProcessInspectorTool {
         match payload {
             ToolPayload::Process { pid } => {
                 self.pid_input = pid.to_string();
+                self.selected_pid = Some(pid);
                 self.result = None;
                 vec![AppAction::InspectProcess { pid }]
             }
@@ -154,7 +180,41 @@ impl ToolModule for ProcessInspectorTool {
         match result {
             TaskResult::Process(result) => {
                 self.busy = false;
+                if let Ok(process) = &result {
+                    self.selected_pid = Some(process.pid);
+                    self.command_line_state
+                        .insert(process.pid, CommandLineState::Loading);
+                    self.pending_command_line = Some(process.pid);
+                }
                 self.result = Some(result);
+            }
+            TaskResult::ProcessTree(result) => {
+                self.busy = false;
+                self.tree_refresh_pending = false;
+                self.tree = Some(result);
+            }
+            TaskResult::ProcessCommandLine { pid, result } => {
+                self.busy = false;
+                match result {
+                    Ok(ProcessCommandLine {
+                        pid: result_pid,
+                        command_line,
+                    }) => {
+                        if let Some(Ok(process)) = &mut self.result
+                            && process.pid == result_pid
+                        {
+                            process.command_line = command_line.clone();
+                        }
+                        self.command_line_state
+                            .insert(result_pid, CommandLineState::Ready(command_line));
+                    }
+                    Err(error) => {
+                        self.command_line_state.insert(
+                            pid,
+                            CommandLineState::Failed(command_line_failure_message(pid, &error)),
+                        );
+                    }
+                }
             }
             TaskResult::ProcessTerminated(result) => {
                 self.busy = false;
@@ -172,6 +232,13 @@ impl ToolModule for ProcessInspectorTool {
     fn set_busy(&mut self, busy: bool) {
         self.busy = busy;
     }
+
+    fn poll_actions(&mut self, _now: std::time::Instant) -> Vec<AppAction> {
+        self.pending_command_line
+            .take()
+            .map(|pid| vec![AppAction::InspectProcessCommandLine { pid }])
+            .unwrap_or_default()
+    }
 }
 
 impl ProcessInspectorTool {
@@ -183,6 +250,136 @@ impl ProcessInspectorTool {
                 Vec::new()
             }
         }
+    }
+
+    fn render_selected_detail(&self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        match (self.selected_pid, &self.result) {
+            (Some(pid), Some(Ok(process))) if process.pid == pid => {
+                self.render_process(ui, process, actions);
+            }
+            (_, Some(Err(error))) => error_state(ui, error),
+            (Some(pid), _) => empty_state(
+                ui,
+                "正在读取选中进程",
+                &format!("PID {pid} 的详情将在后台加载。"),
+            ),
+            (None, _) => empty_state(
+                ui,
+                "选择一个进程查看详情",
+                "点击左侧树节点后，这里会显示路径、命令行、启动时间和父子关系。",
+            ),
+        }
+    }
+
+    fn render_tree_node(
+        &mut self,
+        ui: &mut egui::Ui,
+        nodes: &HashMap<u32, ProcessTreeNode>,
+        pid: u32,
+        depth: usize,
+        actions: &mut Vec<AppAction>,
+    ) {
+        let Some(node) = nodes.get(&pid) else {
+            return;
+        };
+        if !self.node_matches(nodes, pid) {
+            return;
+        }
+        let expanded = self.expanded.contains(&pid)
+            || (!self.tree_filter.trim().is_empty()
+                && self.node_has_matching_descendant(nodes, pid));
+        ui.horizontal(|ui| {
+            ui.add_space((depth.min(16) as f32) * 16.0);
+            if node.children.is_empty() {
+                ui.add_sized([20.0, 24.0], egui::Label::new(" "));
+            } else if ui
+                .add_sized(
+                    [20.0, 24.0],
+                    egui::Button::new(if expanded { "v" } else { ">" }),
+                )
+                .clicked()
+            {
+                if expanded {
+                    self.expanded.remove(&pid);
+                } else {
+                    self.expanded.insert(pid);
+                }
+            }
+            let selected = self.selected_pid == Some(pid);
+            let response = ui.add(
+                egui::Label::new(
+                    RichText::new(format!("{}  (PID {})", node.name, node.pid))
+                        .strong()
+                        .color(if selected {
+                            ui::accent(ui)
+                        } else {
+                            ui.visuals().text_color()
+                        }),
+                )
+                .wrap()
+                .sense(egui::Sense::click()),
+            );
+            response
+                .clone()
+                .on_hover_text(format!("{} (PID {})", node.name, node.pid));
+            if selected || response.has_focus() {
+                ui.painter().rect_stroke(
+                    response.rect.expand(2.0),
+                    egui::CornerRadius::same(4),
+                    egui::Stroke::new(1.0_f32, ui::accent(ui)),
+                    egui::StrokeKind::Middle,
+                );
+            }
+            if response.clicked() {
+                response.request_focus();
+            }
+            if response.clicked()
+                || (response.has_focus()
+                    && ui.input(|input| {
+                        input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
+                    }))
+            {
+                self.selected_pid = Some(pid);
+                self.pid_input = pid.to_string();
+                self.result = None;
+                actions.push(AppAction::InspectProcess { pid });
+            }
+        });
+        if expanded {
+            for child_pid in &node.children {
+                self.render_tree_node(ui, nodes, *child_pid, depth + 1, actions);
+            }
+        }
+    }
+
+    fn node_matches(&self, nodes: &HashMap<u32, ProcessTreeNode>, pid: u32) -> bool {
+        let filter = self.tree_filter.trim().to_ascii_lowercase();
+        if filter.is_empty() {
+            return true;
+        }
+        let Some(node) = nodes.get(&pid) else {
+            return false;
+        };
+        node.name.to_ascii_lowercase().contains(&filter)
+            || node.pid.to_string().contains(&filter)
+            || self.node_has_matching_descendant(nodes, pid)
+    }
+
+    fn node_has_matching_descendant(
+        &self,
+        nodes: &HashMap<u32, ProcessTreeNode>,
+        pid: u32,
+    ) -> bool {
+        let filter = self.tree_filter.trim().to_ascii_lowercase();
+        nodes.get(&pid).is_some_and(|node| {
+            node.children.iter().any(|child_pid| {
+                nodes.get(child_pid).is_some_and(|child| {
+                    child.name.to_ascii_lowercase().contains(&filter)
+                        || child.pid.to_string().contains(&filter)
+                        || self.node_has_matching_descendant(nodes, *child_pid)
+                })
+            })
+        })
     }
 
     fn render_process(
@@ -300,25 +497,25 @@ impl ProcessInspectorTool {
                 .exe_path
                 .as_deref()
                 .unwrap_or("无法读取（受保护的系统进程可能需要管理员权限）");
-            ui.add(egui::Label::new(RichText::new(path).monospace().color(ui::accent(ui))).wrap())
-                .on_hover_text(path);
+            wrapped_detail_label(ui, RichText::new(path).color(ui::accent(ui))).on_hover_text(path);
 
             ui.add_space(ui::SPACE_12);
             ui.strong("命令行参数");
             ui.add_space(4.0);
-            let command_line = process
-                .command_line
-                .as_deref()
-                .unwrap_or("未读取（当前版本为系统兼容性不依赖未公开 NT API）");
-            ui.add(
-                egui::Label::new(
-                    RichText::new(command_line)
-                        .monospace()
-                        .color(ui.visuals().weak_text_color()),
-                )
-                .wrap(),
+            let command_line = match self.command_line_state.get(&process.pid) {
+                Some(CommandLineState::Loading) => "正在通过 WMI 读取命令行...".to_owned(),
+                Some(CommandLineState::Ready(Some(value))) => value.clone(),
+                Some(CommandLineState::Ready(None)) => {
+                    "WMI 未返回命令行（可能为空或权限不足）".into()
+                }
+                Some(CommandLineState::Failed(error)) => format!("命令行不可用：{error}"),
+                None => "等待后台读取命令行...".into(),
+            };
+            wrapped_detail_label(
+                ui,
+                RichText::new(&command_line).color(ui.visuals().weak_text_color()),
             )
-            .on_hover_text(command_line);
+            .on_hover_text(&command_line);
 
             ui.add_space(ui::SPACE_16);
             ui.horizontal(|ui| {
@@ -334,7 +531,7 @@ impl ProcessInspectorTool {
                     if let Some(parent_pid) = process.parent_pid {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(parent_pid.to_string()).monospace().size(13.5));
-                            if ui::small_action_button(ui, "查看父进程 ➔").clicked() {
+                            if ui::small_action_button(ui, "查看父进程").clicked() {
                                 actions.push(AppAction::InspectProcess { pid: parent_pid });
                             }
                         });
@@ -442,14 +639,11 @@ fn render_related_process(
             });
             if let Some(path) = &process.exe_path {
                 ui.add_space(1.0);
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(path)
-                            .monospace()
-                            .small()
-                            .color(ui.visuals().weak_text_color()),
-                    )
-                    .wrap(),
+                wrapped_detail_label(
+                    ui,
+                    RichText::new(path)
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
                 )
                 .on_hover_text(path);
                 ui.add_space(2.0);
@@ -511,11 +705,34 @@ fn append_summaries(report: &mut String, processes: &[ProcessSummary]) {
     }
 }
 
+fn wrapped_detail_label(ui: &mut egui::Ui, text: RichText) -> egui::Response {
+    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+        ui.add(egui::Label::new(text).wrap())
+    })
+    .inner
+}
+
+fn command_line_failure_message(pid: u32, error: &AppError) -> String {
+    match error {
+        AppError::ProcessExited(_) => format!("PID {pid} 已退出"),
+        _ => {
+            let (title, detail) = error.user_message();
+            format!("{title}：{detail}")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::model::{ProcessInfo, ProcessSummary};
+    use eframe::egui;
 
-    use super::process_report;
+    use crate::{
+        core::worker::TaskResult,
+        model::{AppError, ProcessInfo, ProcessSummary},
+        tools::ToolModule,
+    };
+
+    use super::{CommandLineState, ProcessInspectorTool, process_report};
 
     #[test]
     fn report_contains_children_and_parent_paths() {
@@ -542,5 +759,38 @@ mod tests {
         assert!(report.contains(r"C:\parent.exe"));
         assert!(report.contains("子进程😀.exe (PID 9)"));
         assert!(report.contains("父进程📁.exe (PID 7)"));
+    }
+
+    #[test]
+    fn command_line_failure_stays_with_requested_pid() {
+        let mut tool = ProcessInspectorTool {
+            selected_pid: Some(22),
+            ..Default::default()
+        };
+
+        tool.handle_task_result(TaskResult::ProcessCommandLine {
+            pid: 11,
+            result: Err(AppError::ProcessExited(11)),
+        });
+
+        assert!(matches!(
+            tool.command_line_state.get(&11),
+            Some(CommandLineState::Failed(message)) if message == "PID 11 已退出"
+        ));
+        assert!(!tool.command_line_state.contains_key(&22));
+    }
+
+    #[test]
+    fn detail_text_layout_disables_column_justification() {
+        egui::__run_test_ui(|ui| {
+            ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
+                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                    let (_, galley, _) = egui::Label::new(r"D:\Program Files")
+                        .wrap()
+                        .layout_in_ui(ui);
+                    assert!(!galley.job.justify);
+                });
+            });
+        });
     }
 }
