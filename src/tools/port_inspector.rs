@@ -105,13 +105,15 @@ impl ToolModule for PortInspectorTool {
 
     fn ui(&mut self, ui: &mut egui::Ui, _context: ToolUiContext) -> Vec<AppAction> {
         let mut actions = Vec::new();
+        let palette = ui::palette_for_ui(ui);
         heading(
             ui,
-            "端口占用",
-            "实时查看 Windows 系统中的 TCP / UDP 监听端点、网络连接与所属进程。",
+            "端口占用检测",
+            "通过 Windows IP Helper API 实时列出系统 TCP / UDP 监听端点、网络套接字与进程归属。",
         );
         ui.add_space(ui::SPACE_16);
-        ui::card(ui, |ui| {
+
+        ui::tech_card(ui, palette.accent, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.add_sized(
                     [220.0, ui::CONTROL_HEIGHT],
@@ -167,10 +169,9 @@ impl ToolModule for PortInspectorTool {
             if let Some(pid) = self.exact_pid {
                 ui.add_space(ui::SPACE_8);
                 ui.horizontal(|ui| {
-                    let palette = ui::palette_for_ui(ui);
                     ui::badge(
                         ui,
-                        &format!("过滤 PID: {pid}"),
+                        &format!("已过滤 PID: {pid}"),
                         palette.accent,
                         palette.accent.gamma_multiply(if ui.visuals().dark_mode {
                             0.22
@@ -200,7 +201,7 @@ impl ToolModule for PortInspectorTool {
             empty_state(
                 ui,
                 "暂未获取到端口数据",
-                "点击“立即刷新”，或开启定时自动刷新以持续监控。",
+                "点击“立即刷新”，或开启定时自动刷新以持续监控网络端口占用。",
             )
         } else {
             self.render_table(ui, &mut actions);
@@ -261,6 +262,7 @@ impl PortInspectorTool {
     }
 
     fn render_table(&mut self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        let palette = ui::palette_for_ui(ui);
         let filter = self.filter.trim().to_lowercase();
         let exact_port = self
             .exact_port
@@ -303,6 +305,36 @@ impl PortInspectorTool {
             .filter(|r| r.state == Some(TcpState::Established))
             .count();
 
+        // 顶部网络端点指标磁贴
+        let tile_w = ((ui.available_width() - ui::SPACE_12 * 2.0) / 3.0).max(140.0);
+        ui.horizontal_wrapped(|ui| {
+            ui::metric_tile(
+                ui,
+                tile_w,
+                "匹配端点总数",
+                &rows.len().to_string(),
+                "个端点",
+                palette.accent,
+            );
+            ui::metric_tile(
+                ui,
+                tile_w,
+                "监听状态 (LISTEN)",
+                &listening_count.to_string(),
+                "个端口",
+                palette.success_text,
+            );
+            ui::metric_tile(
+                ui,
+                tile_w,
+                "已连接 (ESTABLISHED)",
+                &established_count.to_string(),
+                "条活动连接",
+                palette.accent_secondary,
+            );
+        });
+        ui.add_space(ui::SPACE_12);
+
         ui.horizontal(|ui| {
             let refresh = self
                 .last_refresh_label
@@ -310,14 +342,12 @@ impl PortInspectorTool {
                 .map_or_else(|| "尚未刷新".to_owned(), |time| format!("更新于 {time}"));
             ui.label(
                 RichText::new(format!(
-                    "共 {} 个端点 · 监听: {} · 已连接: {} · {}",
+                    "已捕获 {} 条网络套接字记录 · {}",
                     rows.len(),
-                    listening_count,
-                    established_count,
                     refresh
                 ))
                 .size(13.0)
-                .color(ui.visuals().weak_text_color()),
+                .color(palette.weak),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui::small_action_button(ui, "导出 CSV").clicked() {
@@ -337,10 +367,15 @@ impl PortInspectorTool {
             );
         }
         ui.add_space(ui::SPACE_8);
+        let table_height = (ui.ctx().screen_rect().height() * 0.58).clamp(420.0, 950.0);
         ui::card(ui, |ui| {
             egui::ScrollArea::both()
+                .id_salt("port-inspector-table-scroll")
+                .max_height(table_height)
+                .min_scrolled_height(table_height)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    ui.set_min_height(table_height);
                     render_port_rows(
                         ui,
                         &rows,

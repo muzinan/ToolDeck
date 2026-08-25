@@ -48,13 +48,14 @@ impl ToolModule for FileLockTool {
 
     fn ui(&mut self, ui: &mut egui::Ui, _context: ToolUiContext) -> Vec<AppAction> {
         let mut actions = Vec::new();
+        let palette = ui::palette_for_ui(ui);
         heading(
             ui,
-            "文件占用",
-            "使用 Windows Restart Manager 查找正在占用文件的进程与句柄。",
+            "文件占用与句柄检测",
+            "基于 Windows Restart Manager 探测锁定目标文件的活跃进程与句柄占用者。",
         );
         ui.add_space(ui::SPACE_16);
-        ui::card(ui, |ui| {
+        ui::tech_card(ui, palette.accent, |ui| {
             match ui::action_layout(ui.available_width()) {
                 ui::ActionLayout::Horizontal => {
                     let mut submit = false;
@@ -145,28 +146,68 @@ impl ToolModule for FileLockTool {
             ui.add_space(ui::SPACE_16);
             match result {
                 Ok(result) if result.processes.is_empty() => {
+                    let tile_w = ((ui.available_width() - ui::SPACE_12) / 2.0).max(140.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui::metric_tile(
+                            ui,
+                            tile_w,
+                            "文件锁定状态",
+                            "未锁定 (空闲)",
+                            "可安全编辑/删除",
+                            palette.success_text,
+                        );
+                        ui::metric_tile(
+                            ui,
+                            tile_w,
+                            "占用进程数量",
+                            "0",
+                            "无句柄冲突",
+                            palette.accent,
+                        );
+                    });
+                    ui.add_space(ui::SPACE_12);
                     render_file_result_header(ui, result, &mut actions);
                     ui.add_space(ui::SPACE_12);
                     empty_state(
                         ui,
                         "未检测到文件被任何进程占用",
-                        "Restart Manager 未返回任何占用者，文件当前可被安全移动、编辑或删除。",
+                        "Restart Manager 未返回任何占用者，文件当前可被安全移动、重命名、编辑或删除。",
                     );
                 }
                 Ok(result) => {
+                    let tile_w = ((ui.available_width() - ui::SPACE_12) / 2.0).max(140.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui::metric_tile(
+                            ui,
+                            tile_w,
+                            "文件锁定状态",
+                            "被锁定 (LOCKED)",
+                            "存在句柄持有者",
+                            palette.danger_text,
+                        );
+                        ui::metric_tile(
+                            ui,
+                            tile_w,
+                            "占用进程数量",
+                            &result.processes.len().to_string(),
+                            "个冲突进程",
+                            palette.warning_text,
+                        );
+                    });
+                    ui.add_space(ui::SPACE_12);
                     render_file_result_header(ui, result, &mut actions);
                     ui.add_space(ui::SPACE_16);
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(format!("检测到 {} 个占用进程", result.processes.len()))
-                                .color(ui::danger_text(ui))
+                                .color(palette.danger_text)
                                 .strong()
                                 .size(15.0),
                         );
                     });
                     ui.add_space(ui::SPACE_8);
                     for process in &result.processes {
-                        ui::card(ui, |ui| {
+                        ui::tech_card(ui, palette.danger_text, |ui| {
                             let render_actions = |ui: &mut egui::Ui| {
                                 if ui::small_action_button(ui, "查看进程").clicked() {
                                     actions.push(AppAction::InvokeTool(ToolInvocation::process(

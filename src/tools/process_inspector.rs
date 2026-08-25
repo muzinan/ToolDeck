@@ -71,6 +71,7 @@ impl ToolModule for ProcessInspectorTool {
 
     fn ui(&mut self, ui: &mut egui::Ui, _context: ToolUiContext) -> Vec<AppAction> {
         let mut actions = Vec::new();
+        let palette = ui::palette_for_ui(ui);
         if !self.tree_requested {
             self.tree_requested = true;
             self.tree_refresh_pending = true;
@@ -78,17 +79,17 @@ impl ToolModule for ProcessInspectorTool {
         }
         heading(
             ui,
-            "进程关系",
-            "默认加载全部存活进程并以树形展示；选中节点后在右侧读取详情和命令行参数。",
+            "进程关系与拓扑分析",
+            "基于 Windows Toolhelp 快照解析完整进程树、父子进程链与启动命令行参数。",
         );
         ui.add_space(ui::SPACE_16);
-        ui::card(ui, |ui| {
+        ui::tech_card(ui, palette.accent, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.add_sized(
                     [ui.available_width().max(120.0), ui::CONTROL_HEIGHT],
-                    ui::text_input(&mut self.tree_filter, "筛选名称或 PID"),
+                    ui::text_input(&mut self.tree_filter, "🔍 筛选进程名称或 PID"),
                 );
-                if ui::secondary_button(ui, "刷新全部进程").clicked() {
+                if ui::secondary_button(ui, "刷新全部进程树").clicked() {
                     self.tree_requested = true;
                     self.tree_refresh_pending = true;
                     actions.push(AppAction::LoadProcessTree);
@@ -98,7 +99,7 @@ impl ToolModule for ProcessInspectorTool {
             ui.horizontal_wrapped(|ui| {
                 let input = ui.add_sized(
                     [ui.available_width().clamp(160.0, 360.0), ui::CONTROL_HEIGHT],
-                    ui::text_input(&mut self.pid_input, "输入 PID 查看详情"),
+                    ui::text_input(&mut self.pid_input, "输入指定 PID 精确分析"),
                 );
                 let submit =
                     input.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
@@ -112,7 +113,7 @@ impl ToolModule for ProcessInspectorTool {
             ui.add_space(ui::SPACE_16);
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label(RichText::new("正在读取进程信息...").size(13.5));
+                ui.label(RichText::new("正在通过 Toolhelp 快照与 WMI 读取进程拓扑...").size(13.5));
             });
         }
 
@@ -126,24 +127,85 @@ impl ToolModule for ProcessInspectorTool {
                     .map(|node| (node.pid, node))
                     .collect::<HashMap<_, _>>();
                 let roots = snapshot.roots.clone();
+
+                // 顶部进程指标磁贴
+                let selected_str = self
+                    .selected_pid
+                    .map_or_else(|| "未选择".to_owned(), |pid| format!("PID {pid}"));
+                let tile_w = ((ui.available_width() - ui::SPACE_12 * 2.0) / 3.0).max(140.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui::metric_tile(
+                        ui,
+                        tile_w,
+                        "存活进程总数",
+                        &snapshot.nodes.len().to_string(),
+                        "个节点",
+                        palette.accent,
+                    );
+                    ui::metric_tile(
+                        ui,
+                        tile_w,
+                        "根进程分支数",
+                        &roots.len().to_string(),
+                        "个根系",
+                        palette.accent_secondary,
+                    );
+                    ui::metric_tile(
+                        ui,
+                        tile_w,
+                        "当前选中目标",
+                        &selected_str,
+                        "",
+                        palette.warning_text,
+                    );
+                });
+                ui.add_space(ui::SPACE_16);
+
+                let panel_height = (ui.ctx().screen_rect().height() * 0.58).clamp(420.0, 950.0);
                 let detail_width = ui.available_width();
                 if detail_width >= 760.0 {
                     ui.columns(2, |columns| {
                         columns[0].set_min_width(300.0);
                         ui::card(&mut columns[0], |ui| {
-                            ui.label(RichText::new("全部进程").strong().size(15.0));
+                            ui.label(
+                                RichText::new("全部存活进程树")
+                                    .strong()
+                                    .size(15.0)
+                                    .color(palette.text),
+                            );
                             ui.add_space(ui::SPACE_8);
-                            for pid in &roots {
-                                self.render_tree_node(ui, &nodes, *pid, 0, &mut actions);
-                            }
+                            egui::ScrollArea::vertical()
+                                .id_salt("process-tree-left-scroll")
+                                .max_height(panel_height)
+                                .min_scrolled_height(panel_height)
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.set_min_height(panel_height);
+                                    for pid in &roots {
+                                        self.render_tree_node(ui, &nodes, *pid, 0, &mut actions);
+                                    }
+                                });
                         });
                         ui::card(&mut columns[1], |ui| {
-                            self.render_selected_detail(ui, &mut actions);
+                            egui::ScrollArea::vertical()
+                                .id_salt("process-detail-right-scroll")
+                                .max_height(panel_height)
+                                .min_scrolled_height(panel_height)
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.set_min_height(panel_height);
+                                    self.render_selected_detail(ui, &mut actions);
+                                });
                         });
                     });
                 } else {
                     ui::card(ui, |ui| {
-                        ui.label(RichText::new("全部进程").strong().size(15.0));
+                        ui.label(
+                            RichText::new("全部存活进程树")
+                                .strong()
+                                .size(15.0)
+                                .color(palette.text),
+                        );
                         ui.add_space(ui::SPACE_8);
                         for pid in &roots {
                             self.render_tree_node(ui, &nodes, *pid, 0, &mut actions);
@@ -157,7 +219,7 @@ impl ToolModule for ProcessInspectorTool {
             None if !self.busy => empty_state(
                 ui,
                 "正在准备全部进程树",
-                "首次打开会在后台读取当前存活进程；页面不会阻塞。",
+                "首次打开会在后台读取当前存活进程快照；界面保持流畅响应。",
             ),
             None => {}
         }

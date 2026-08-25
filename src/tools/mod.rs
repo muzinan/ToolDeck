@@ -17,7 +17,7 @@ use crate::{
     model::MtrProgress,
 };
 
-pub use registry::{ToolDescriptor, ToolIcon, ToolRegistry};
+pub use registry::{ToolCategory, ToolDescriptor, ToolIcon, ToolRegistry};
 
 /// 工具 UI 所需的外壳只读状态；禁止将应用状态或其他工具实例直接交给页面。
 #[derive(Clone, Copy)]
@@ -44,7 +44,7 @@ pub trait ToolModule: Send {
     }
 }
 
-/// V0.3.0 的内建工具清单。这里是新增模块唯一需要接入外壳的注册位置。
+/// V0.3.1 的内建工具清单。这里是新增模块唯一需要接入外壳的注册位置。
 pub fn build_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::default();
     registry.register(Box::new(file_lock::FileLockTool::default()));

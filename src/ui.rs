@@ -1,5 +1,5 @@
 //! Windows Toolbox 的共享视觉语言与组件系统。
-//! 该模块负责 Windows 中文字体回退、主题令牌、标准化控件（输入框、各类按钮、徽标、卡片）与矢量图标。
+//! 该模块负责 Windows 中文字体回退、科技感主题令牌、标准化控件（输入框、指标磁贴、各类按钮、徽标、卡片）与矢量图标。
 
 use std::{
     env, fs,
@@ -34,13 +34,13 @@ pub enum ActionLayout {
     Horizontal,
     Vertical,
 }
-
-/// 主题调色板集中管理所有界面的色彩映射，确保对比度与可访问性。
+/// 主题调色板集中管理所有界面的色彩映射，确保对比度与科技感视觉表达。
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
 pub struct ThemePalette {
     pub accent: Color32,
     pub accent_hover: Color32,
+    pub accent_secondary: Color32,
     pub primary_button: Color32,
     pub primary_button_hover: Color32,
     pub secondary_button_bg: Color32,
@@ -64,47 +64,49 @@ pub fn theme_palette(theme: egui::Theme) -> ThemePalette {
     let dark = theme == egui::Theme::Dark;
     if dark {
         ThemePalette {
-            accent: Color32::from_rgb(91, 140, 255),
-            accent_hover: Color32::from_rgb(120, 162, 255),
-            primary_button: Color32::from_rgb(52, 99, 204),
-            primary_button_hover: Color32::from_rgb(68, 118, 230),
-            secondary_button_bg: Color32::from_rgb(32, 39, 54),
-            secondary_button_hover: Color32::from_rgb(42, 52, 72),
-            danger_button: Color32::from_rgb(180, 35, 24),
-            danger_button_hover: Color32::from_rgb(205, 45, 34),
-            surface: Color32::from_rgb(21, 27, 39),
-            surface_elevated: Color32::from_rgb(28, 36, 52),
-            panel: Color32::from_rgb(13, 17, 25),
-            border: Color32::from_rgb(46, 58, 78),
-            border_subtle: Color32::from_rgb(34, 44, 60),
-            text: Color32::from_rgb(238, 242, 250),
-            weak: Color32::from_rgb(164, 178, 199),
-            success_text: Color32::from_rgb(110, 231, 183),
-            danger_text: Color32::from_rgb(253, 164, 175),
-            warning_text: Color32::from_rgb(251, 191, 36),
-            hover: Color32::from_rgb(34, 46, 68),
+            accent: Color32::from_rgb(0, 225, 255), // 赛博电光青 (Cyber Neon Cyan)
+            accent_hover: Color32::from_rgb(56, 235, 255),
+            accent_secondary: Color32::from_rgb(129, 140, 248), // 量子紫 (Quantum Violet)
+            primary_button: Color32::from_rgb(2, 116, 180),     // 科技深蓝
+            primary_button_hover: Color32::from_rgb(3, 136, 209),
+            secondary_button_bg: Color32::from_rgb(22, 32, 57),
+            secondary_button_hover: Color32::from_rgb(31, 45, 80),
+            danger_button: Color32::from_rgb(190, 24, 60), // 激光霓虹红
+            danger_button_hover: Color32::from_rgb(225, 29, 72),
+            surface: Color32::from_rgb(16, 23, 41), // 黑曜石卡片面
+            surface_elevated: Color32::from_rgb(22, 32, 57), // 悬浮科技卡片
+            panel: Color32::from_rgb(10, 14, 26),   // 深空主背景/侧边栏
+            border: Color32::from_rgb(37, 52, 90),  // 科技边框
+            border_subtle: Color32::from_rgb(25, 36, 64),
+            text: Color32::from_rgb(241, 245, 249), // 极客钛白
+            weak: Color32::from_rgb(150, 168, 196), // 科技银灰
+            success_text: Color32::from_rgb(52, 211, 153), // 矩阵翡翠绿
+            danger_text: Color32::from_rgb(251, 113, 133), // 警示红
+            warning_text: Color32::from_rgb(251, 191, 36), // 琥珀金
+            hover: Color32::from_rgb(26, 38, 68),
         }
     } else {
         ThemePalette {
-            accent: Color32::from_rgb(37, 99, 235),
-            accent_hover: Color32::from_rgb(29, 78, 216),
-            primary_button: Color32::from_rgb(37, 99, 235),
-            primary_button_hover: Color32::from_rgb(29, 78, 216),
-            secondary_button_bg: Color32::from_rgb(243, 246, 251),
-            secondary_button_hover: Color32::from_rgb(232, 239, 248),
-            danger_button: Color32::from_rgb(180, 35, 24),
-            danger_button_hover: Color32::from_rgb(153, 27, 18),
+            accent: Color32::from_rgb(2, 116, 180),
+            accent_hover: Color32::from_rgb(3, 90, 145),
+            accent_secondary: Color32::from_rgb(79, 70, 229),
+            primary_button: Color32::from_rgb(2, 116, 180),
+            primary_button_hover: Color32::from_rgb(3, 90, 145),
+            secondary_button_bg: Color32::from_rgb(241, 245, 249),
+            secondary_button_hover: Color32::from_rgb(226, 232, 240),
+            danger_button: Color32::from_rgb(190, 24, 60),
+            danger_button_hover: Color32::from_rgb(159, 18, 57),
             surface: Color32::WHITE,
-            surface_elevated: Color32::from_rgb(249, 251, 254),
-            panel: Color32::from_rgb(243, 246, 251),
-            border: Color32::from_rgb(214, 224, 238),
-            border_subtle: Color32::from_rgb(230, 237, 247),
-            text: Color32::from_rgb(25, 35, 52),
-            weak: Color32::from_rgb(90, 107, 132),
-            success_text: Color32::from_rgb(20, 108, 67),
-            danger_text: Color32::from_rgb(180, 35, 24),
+            surface_elevated: Color32::from_rgb(248, 250, 252),
+            panel: Color32::from_rgb(241, 245, 249),
+            border: Color32::from_rgb(203, 213, 225),
+            border_subtle: Color32::from_rgb(226, 232, 240),
+            text: Color32::from_rgb(15, 23, 42),
+            weak: Color32::from_rgb(71, 85, 105),
+            success_text: Color32::from_rgb(5, 122, 85),
+            danger_text: Color32::from_rgb(190, 24, 60),
             warning_text: Color32::from_rgb(180, 83, 9),
-            hover: Color32::from_rgb(232, 241, 255),
+            hover: Color32::from_rgb(224, 242, 254),
         }
     }
 }
@@ -138,35 +140,78 @@ fn first_readable_font(font_directory: &Path) -> Option<(PathBuf, Vec<u8>)> {
     None
 }
 
-/// 安装 Windows 系统中文字体。失败时保留 egui 默认字体，应用仍可正常启动。
+/// 安装 Windows 系统中文字体与符号字体。失败时保留 egui 默认字体，应用仍可正常启动。
 pub fn install_windows_fonts(context: &egui::Context) {
     let font_directory = env::var_os("WINDIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
         .join("Fonts");
-    let Some((path, bytes)) = first_readable_font(&font_directory) else {
-        eprintln!("警告：未找到可用 Windows 中文字体，将继续使用 egui 默认字体。");
-        return;
-    };
 
     let mut fonts = FontDefinitions::default();
-    let font_name = "windows-chinese-ui".to_owned();
-    let mut font_data = FontData::from_owned(bytes);
-    font_data.index = 0;
-    fonts.font_data.insert(font_name.clone(), font_data.into());
-    fonts
-        .families
-        .entry(FontFamily::Proportional)
-        .or_default()
-        .insert(0, font_name.clone());
-    let monospace = fonts.families.entry(FontFamily::Monospace).or_default();
-    let hack_index = monospace
-        .iter()
-        .position(|name| name == "Hack")
-        .map_or(0, |index| index + 1);
-    monospace.insert(hack_index, font_name);
+
+    // 1. 加载 Windows 中文字体 (微软雅黑 / 黑体 / 宋体 / 等线)
+    if let Some((path, bytes)) = first_readable_font(&font_directory) {
+        let font_name = "windows-chinese-ui".to_owned();
+        let mut font_data = FontData::from_owned(bytes);
+        font_data.index = 0;
+        fonts.font_data.insert(font_name.clone(), font_data.into());
+        fonts
+            .families
+            .entry(FontFamily::Proportional)
+            .or_default()
+            .insert(0, font_name.clone());
+        let monospace = fonts.families.entry(FontFamily::Monospace).or_default();
+        let hack_index = monospace
+            .iter()
+            .position(|name| name == "Hack")
+            .map_or(0, |index| index + 1);
+        monospace.insert(hack_index, font_name);
+        eprintln!("已加载 Windows 中文字体：{}", path.display());
+    } else {
+        eprintln!("警告：未找到可用 Windows 中文字体，将继续使用 egui 默认字体。");
+    }
+
+    // 2. 加载 Windows 原生符号字体 Segoe UI Symbol (包含所有几何图形、星标、箭头与状态字符)
+    let symbol_path = font_directory.join("seguisym.ttf");
+    if let Ok(bytes) = fs::read(&symbol_path) {
+        let sym_name = "windows-symbols".to_owned();
+        fonts
+            .font_data
+            .insert(sym_name.clone(), FontData::from_owned(bytes).into());
+        fonts
+            .families
+            .entry(FontFamily::Proportional)
+            .or_default()
+            .push(sym_name.clone());
+        fonts
+            .families
+            .entry(FontFamily::Monospace)
+            .or_default()
+            .push(sym_name);
+        eprintln!("已加载 Windows 符号字体：seguisym.ttf");
+    }
+
+    // 3. 加载 Windows 原生表情/图标字体 Segoe UI Emoji
+    let emoji_path = font_directory.join("seguiemj.ttf");
+    if let Ok(bytes) = fs::read(&emoji_path) {
+        let emoji_name = "windows-emoji".to_owned();
+        fonts
+            .font_data
+            .insert(emoji_name.clone(), FontData::from_owned(bytes).into());
+        fonts
+            .families
+            .entry(FontFamily::Proportional)
+            .or_default()
+            .push(emoji_name.clone());
+        fonts
+            .families
+            .entry(FontFamily::Monospace)
+            .or_default()
+            .push(emoji_name);
+        eprintln!("已加载 Windows 表情字体：seguiemj.ttf");
+    }
+
     context.set_fonts(fonts);
-    eprintln!("已加载 Windows 中文字体：{}", path.display());
 }
 
 /// 为浅色与深色主题一次性配置统一的 egui 样式。
@@ -211,12 +256,12 @@ fn configure_style(style: &mut egui::Style, theme: egui::Theme) {
     style.visuals.window_fill = palette.surface;
     style.visuals.extreme_bg_color = palette.surface;
     style.visuals.faint_bg_color = if dark {
-        Color32::from_rgb(26, 34, 48)
+        Color32::from_rgb(20, 28, 50)
     } else {
         Color32::from_rgb(246, 249, 253)
     };
     style.visuals.code_bg_color = if dark {
-        Color32::from_rgb(28, 36, 52)
+        Color32::from_rgb(22, 32, 57)
     } else {
         Color32::from_rgb(238, 243, 250)
     };
@@ -247,7 +292,7 @@ fn configure_style(style: &mut egui::Style, theme: egui::Theme) {
 
     style.visuals.selection.bg_fill = palette
         .accent
-        .gamma_multiply(if dark { 0.40 } else { 0.20 });
+        .gamma_multiply(if dark { 0.35 } else { 0.20 });
     style.visuals.selection.stroke = Stroke::new(1.0_f32, palette.accent);
     style.visuals.hyperlink_color = palette.accent;
     style.visuals.weak_text_color = Some(palette.weak);
@@ -284,24 +329,59 @@ pub fn warning_text(ui: &egui::Ui) -> Color32 {
     palette_for_ui(ui).warning_text
 }
 
-/// 页面标题与说明，统一所有工具页面的信息层级。
+/// 绘制高科技页面标头，包含赛博前缀、标题与描述副标题。
 pub fn page_heading(ui: &mut egui::Ui, title: &str, subtitle: &str) {
-    ui.label(RichText::new(title).size(24.0).strong());
-    ui.add_space(2.0);
-    ui.label(RichText::new(subtitle).color(ui.visuals().weak_text_color()));
+    ui.horizontal(|ui| {
+        let palette = palette_for_ui(ui);
+        // 科技感前置指示柱
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(4.0, 24.0), egui::Sense::hover());
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(2), palette.accent);
+        ui.add_space(SPACE_4);
+        ui.vertical(|ui| {
+            ui.label(RichText::new(title).size(22.0).strong().color(palette.text));
+            if !subtitle.is_empty() {
+                ui.add_space(1.0);
+                ui.label(RichText::new(subtitle).size(13.0).color(palette.weak));
+            }
+        });
+    });
 }
 
-/// 绘制标准卡片容器，具有统一的圆角、背景与浅色边框。
+/// 绘制标准卡片容器，具有统一的科技圆角、背景与微妙边框。
 pub fn card(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    let palette = palette_for_ui(ui);
     let frame = Frame::new()
-        .fill(ui.visuals().window_fill)
-        .stroke(Stroke::new(
-            1.0_f32,
-            ui.visuals().widgets.inactive.bg_stroke.color,
-        ))
+        .fill(palette.surface)
+        .stroke(Stroke::new(1.0_f32, palette.border))
         .corner_radius(CornerRadius::same(8))
         .inner_margin(Margin::same(SPACE_16 as i8));
     frame.show(ui, add_contents);
+}
+
+/// 绘制带有侧边发光高亮条的科技感重点卡片。
+pub fn tech_card(
+    ui: &mut egui::Ui,
+    accent_color: Color32,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let palette = palette_for_ui(ui);
+    let frame = Frame::new()
+        .fill(palette.surface)
+        .stroke(Stroke::new(1.0_f32, palette.border))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::same(SPACE_16 as i8));
+    let response = frame.show(ui, add_contents);
+    // 在卡片顶部绘制细长霓虹强调线
+    let top_rect = egui::Rect::from_min_size(
+        response.response.rect.left_top() + Vec2::new(8.0, 0.0),
+        Vec2::new(response.response.rect.width() - 16.0, 2.0),
+    );
+    ui.painter().rect_filled(
+        top_rect,
+        CornerRadius::same(1),
+        accent_color.gamma_multiply(0.85),
+    );
 }
 
 /// 绘制高亮/重点卡片，带有微弱的主题背景色。
@@ -318,15 +398,78 @@ pub fn elevated_card(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)
 
 /// 绘制按内容收缩的浮层卡片，避免通知提示被扩展到页面全宽。
 pub fn compact_card(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    let palette = palette_for_ui(ui);
     let frame = Frame::new()
-        .fill(ui.visuals().window_fill)
-        .stroke(Stroke::new(
-            1.0_f32,
-            ui.visuals().widgets.inactive.bg_stroke.color,
-        ))
+        .fill(palette.surface_elevated)
+        .stroke(Stroke::new(1.0_f32, palette.accent.gamma_multiply(0.40)))
         .corner_radius(CornerRadius::same(8))
         .inner_margin(Margin::symmetric(SPACE_16 as i8, SPACE_12 as i8));
     frame.show(ui, add_contents);
+}
+
+/// 科技数字指标磁贴 (Metric Tile)，用于在控制台顶部展示大字号关键数据。
+pub fn metric_tile(
+    ui: &mut egui::Ui,
+    width: f32,
+    label: &str,
+    value: &str,
+    unit: &str,
+    accent_color: Color32,
+) {
+    let (response, painter) = ui.allocate_painter(Vec2::new(width, 68.0), egui::Sense::hover());
+    let palette = palette_for_ui(ui);
+    let rect = response.rect;
+
+    // 背景底板与细边框
+    let fill_color = if response.hovered() {
+        palette.hover
+    } else {
+        palette.surface
+    };
+    painter.rect(
+        rect,
+        CornerRadius::same(6),
+        fill_color,
+        Stroke::new(1.0_f32, palette.border),
+        egui::StrokeKind::Middle,
+    );
+
+    // 左侧霓虹发光标记
+    let bar_rect = egui::Rect::from_min_size(
+        rect.left_top() + Vec2::new(0.0, 8.0),
+        Vec2::new(3.0, rect.height() - 16.0),
+    );
+    painter.rect_filled(bar_rect, CornerRadius::same(1), accent_color);
+
+    // 标签文字
+    painter.text(
+        rect.left_top() + Vec2::new(12.0, 10.0),
+        egui::Align2::LEFT_TOP,
+        label,
+        egui::FontId::proportional(12.0),
+        palette.weak,
+    );
+
+    // 主数值
+    painter.text(
+        rect.left_top() + Vec2::new(12.0, 28.0),
+        egui::Align2::LEFT_TOP,
+        value,
+        egui::FontId::monospace(20.0),
+        accent_color,
+    );
+
+    // 单位附注
+    if !unit.is_empty() {
+        let value_width = (value.len() as f32) * 12.0;
+        painter.text(
+            rect.left_top() + Vec2::new(14.0 + value_width, 36.0),
+            egui::Align2::LEFT_TOP,
+            unit,
+            egui::FontId::proportional(11.0),
+            palette.weak,
+        );
+    }
 }
 
 /// 状态指示卡片。
@@ -334,7 +477,10 @@ pub fn state_card(ui: &mut egui::Ui, title: &str, detail: &str, color: Color32) 
     card(ui, |ui| {
         ui.horizontal(|ui| {
             let (response, painter) = ui.allocate_painter(Vec2::splat(18.0), egui::Sense::hover());
-            painter.circle_filled(response.rect.center(), 5.0, color);
+            // 外圈柔光环
+            painter.circle_filled(response.rect.center(), 7.0, color.gamma_multiply(0.25));
+            // 核心指示灯
+            painter.circle_filled(response.rect.center(), 4.0, color);
             ui.add_space(SPACE_4);
             ui.vertical(|ui| {
                 ui.label(RichText::new(title).strong().size(14.0));
@@ -359,7 +505,7 @@ pub fn text_input<'a>(text: &'a mut String, hint: &'a str) -> TextEdit<'a> {
         .font(egui::TextStyle::Body)
 }
 
-/// 标准主按钮（高亮强调色填充，白字，统一圆角）。
+/// 标准主按钮（高亮强调色填充，白字，统一科技倒角）。
 pub fn primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let palette = palette_for_ui(ui);
     let button = egui::Button::new(RichText::new(text).color(Color32::WHITE).strong())
@@ -426,26 +572,60 @@ pub fn danger_button_sized(ui: &mut egui::Ui, text: &str, size: [f32; 2]) -> egu
 /// 紧凑操作小按钮（用于表格行内、卡片内“复制”、“打开所在位置”等操作）。
 pub fn small_action_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let palette = palette_for_ui(ui);
-    let button = egui::Button::new(RichText::new(text).size(12.5).color(palette.text))
+    let button = egui::Button::new(RichText::new(text).size(12.0).color(palette.text))
         .fill(palette.secondary_button_bg)
         .stroke(Stroke::new(1.0_f32, palette.border_subtle))
-        .corner_radius(CornerRadius::same(5))
+        .corner_radius(CornerRadius::same(4))
         .min_size(Vec2::new(0.0, COMPACT_CONTROL_HEIGHT));
     ui.add(button)
 }
 
 /// 状态徽标 / 胶囊标签（用于协议 TCP/UDP、状态 LISTENING/ESTABLISHED、PID 标签等）。
 pub fn badge(ui: &mut egui::Ui, text: &str, fg: Color32, bg: Color32) -> egui::Response {
-    let font_id = egui::FontId::proportional(12.0);
+    let font_id = egui::FontId::proportional(11.5);
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font_id, fg);
     let size = Vec2::new(galley.size().x + 14.0, 22.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter();
-    painter.rect_filled(rect, CornerRadius::same(11), bg);
+    painter.rect(
+        rect,
+        CornerRadius::same(11),
+        bg,
+        Stroke::new(1.0_f32, fg.gamma_multiply(0.35)),
+        egui::StrokeKind::Middle,
+    );
     painter.galley(
         rect.left_center() + Vec2::new(7.0, -galley.size().y * 0.5),
         galley,
         fg,
+    );
+    response
+}
+
+/// 带有微型状态脉冲小圆点的科技徽章。
+pub fn status_pill(ui: &mut egui::Ui, text: &str, color: Color32) -> egui::Response {
+    let font_id = egui::FontId::proportional(12.0);
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), font_id, color);
+    let size = Vec2::new(galley.size().x + 24.0, 22.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let painter = ui.painter();
+    let bg = color.gamma_multiply(if ui.visuals().dark_mode { 0.16 } else { 0.10 });
+    painter.rect(
+        rect,
+        CornerRadius::same(11),
+        bg,
+        Stroke::new(1.0_f32, color.gamma_multiply(0.40)),
+        egui::StrokeKind::Middle,
+    );
+    // 脉冲小圆点
+    let dot_center = rect.left_center() + Vec2::new(9.0, 0.0);
+    painter.circle_filled(dot_center, 4.5, color.gamma_multiply(0.30));
+    painter.circle_filled(dot_center, 2.5, color);
+
+    painter.galley(
+        rect.left_center() + Vec2::new(17.0, -galley.size().y * 0.5),
+        galley,
+        color,
     );
     response
 }
@@ -459,7 +639,13 @@ pub fn icon_badge(
     bg_color: Color32,
 ) {
     let (response, painter) = ui.allocate_painter(Vec2::splat(size), egui::Sense::hover());
-    painter.rect_filled(response.rect, CornerRadius::same(8), bg_color);
+    painter.rect(
+        response.rect,
+        CornerRadius::same(8),
+        bg_color,
+        Stroke::new(1.0_f32, icon_color.gamma_multiply(0.30)),
+        egui::StrokeKind::Middle,
+    );
     paint_tool_icon(&painter, response.rect, icon, icon_color);
 }
 
@@ -537,13 +723,59 @@ pub fn paint_tool_icon(
             painter.circle_filled(left, size * 0.09, color);
             painter.circle_filled(right, size * 0.09, color);
         }
-        ToolIcon::Dns | ToolIcon::Ping | ToolIcon::TcpProbe | ToolIcon::Mtr => {
+        ToolIcon::Dns => {
             painter.circle_stroke(rect.center(), size * 0.28, stroke);
             painter.line_segment([rect.left_center(), rect.right_center()], stroke);
             painter.line_segment([rect.center_top(), rect.center_bottom()], stroke);
-            if matches!(icon, ToolIcon::TcpProbe | ToolIcon::Mtr) {
-                painter.line_segment([rect.left_bottom(), rect.right_top()], stroke);
-            }
+            // 绘制小型雷达脉冲点
+            painter.circle_filled(
+                rect.center() + Vec2::new(size * 0.10, -size * 0.10),
+                size * 0.06,
+                color,
+            );
+        }
+        ToolIcon::Ping => {
+            // 脉冲波形图
+            let center = rect.center();
+            painter.circle_stroke(center, size * 0.12, stroke);
+            painter.circle_stroke(
+                center,
+                size * 0.24,
+                Stroke::new((size * 0.06).max(1.0), color.gamma_multiply(0.60)),
+            );
+            painter.circle_stroke(
+                center,
+                size * 0.32,
+                Stroke::new((size * 0.05).max(0.8), color.gamma_multiply(0.30)),
+            );
+            painter.circle_filled(center, size * 0.06, color);
+        }
+        ToolIcon::TcpProbe => {
+            // 握手双向连接图
+            let left = rect.left_center() + Vec2::new(size * 0.05, 0.0);
+            let right = rect.right_center() - Vec2::new(size * 0.05, 0.0);
+            painter.line_segment([left, left + Vec2::new(size * 0.18, 0.0)], stroke);
+            painter.line_segment([right, right - Vec2::new(size * 0.18, 0.0)], stroke);
+            painter.circle_filled(left, size * 0.08, color);
+            painter.circle_filled(right, size * 0.08, color);
+            let center_rect = egui::Rect::from_center_size(rect.center(), Vec2::splat(size * 0.22));
+            painter.rect_stroke(
+                center_rect,
+                CornerRadius::same(2),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+        }
+        ToolIcon::Mtr => {
+            // 逐跳路由拓扑图
+            let p1 = rect.left_bottom() + Vec2::new(size * 0.06, -size * 0.06);
+            let p2 = rect.center() + Vec2::new(-size * 0.04, -size * 0.12);
+            let p3 = rect.right_bottom() + Vec2::new(-size * 0.06, -size * 0.06);
+            painter.line_segment([p1, p2], stroke);
+            painter.line_segment([p2, p3], stroke);
+            painter.circle_filled(p1, size * 0.08, color);
+            painter.circle_filled(p2, size * 0.09, color);
+            painter.circle_filled(p3, size * 0.08, color);
         }
     }
 }

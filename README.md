@@ -1,6 +1,6 @@
 # Windows Toolbox
 
-Windows Toolbox 是一个面向 Windows 10/11 x64 的原生系统工具集合。V0.3.0 提供文件、端口、进程、基础网络和 MTR 路径诊断，并从一开始采用可扩展的 Tool Host + Tool Module 架构。
+Windows Toolbox 是一个面向 Windows 10/11 x64 的原生系统工具集合。V0.3.1 提供文件、端口、进程、基础网络和 MTR 路径诊断，并采用可扩展的 Tool Host + Tool Module 架构。
 
 ## 当前功能
 
@@ -69,7 +69,7 @@ target\x86_64-pc-windows-msvc\release\windows-toolbox.exe
 ## 权限与限制
 
 - 默认以普通用户权限运行；部分系统进程的信息或结束操作会因访问限制而失败，并向用户明确提示。
-- V0.3.0 通过公开 Toolhelp、WMI/COM 和 Windows ICMP API 读取当前选中进程的命令行并执行 MTR；不使用未公开 NT API，也不实现深度句柄扫描、强制关闭 Handle、驱动、注入或权限绕过。
+- V0.3.1 通过公开 Toolhelp、WMI/COM 和 Windows ICMP API 读取当前选中进程的命令行并执行 MTR；不使用未公开 NT API，也不实现深度句柄扫描、强制关闭 Handle、驱动、注入或权限绕过。
 
 网络工具：
 

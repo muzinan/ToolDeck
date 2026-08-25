@@ -42,14 +42,15 @@ impl ToolModule for MtrTool {
 
     fn ui(&mut self, ui: &mut egui::Ui, _context: ToolUiContext) -> Vec<AppAction> {
         let mut actions = Vec::new();
+        let palette = ui::palette_for_ui(ui);
         ui::page_heading(
             ui,
-            "MTR 路径诊断",
-            "使用 Windows 原生 ICMP 按跳数观察网络路径和质量",
+            "MTR 路径与路由链路诊断",
+            "使用 Windows 原生 ICMP 逐跳探测路由节点、往返延迟与丢包率分布。",
         );
-        ui.add_space(ui::SPACE_20);
+        ui.add_space(ui::SPACE_16);
 
-        ui::card(ui, |ui| {
+        ui::tech_card(ui, palette.accent, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("目标主机").strong());
                 ui.add_sized(
@@ -72,10 +73,10 @@ impl ToolModule for MtrTool {
                         }
                     });
                 if self.busy {
-                    if ui::danger_button(ui, "停止探测").clicked() {
+                    if ui::secondary_button(ui, "停止探测").clicked() {
                         actions.push(AppAction::StopMtr);
                     }
-                } else if ui::primary_button(ui, "开始 MTR").clicked() {
+                } else if ui::primary_button(ui, "开始 MTR 诊断").clicked() {
                     match self.config.validate() {
                         Ok(()) if !self.host.trim().is_empty() => {
                             self.validation_error = None;
@@ -91,61 +92,60 @@ impl ToolModule for MtrTool {
             });
             if let Some(error) = &self.validation_error {
                 ui.add_space(ui::SPACE_4);
-                ui.colored_label(ui::danger_text(ui), error);
+                ui.colored_label(palette.danger_text, error);
             }
         });
 
         ui.add_space(ui::SPACE_12);
         ui::card(ui, |ui| {
-            egui::CollapsingHeader::new(RichText::new("高级参数").strong())
-                .id_salt("mtr-advanced-parameters")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.add_space(ui::SPACE_8);
-                    egui::Grid::new("mtr-advanced-grid")
-                        .num_columns(4)
-                        .spacing([16.0, 8.0])
-                        .show(ui, |ui| {
-                            ui.label("最大跳数");
-                            ui.add(egui::DragValue::new(&mut self.config.max_hops).range(1..=64));
-                            ui.label("每跳探测");
-                            ui.add(
-                                egui::DragValue::new(&mut self.config.probes_per_hop).range(1..=10),
-                            );
-                            ui.end_row();
-                            ui.label("单次超时 (ms)");
-                            ui.add(
-                                egui::DragValue::new(&mut self.config.timeout_ms)
-                                    .range(100..=5_000),
-                            );
-                            ui.label("探测间隔 (ms)");
-                            ui.add(
-                                egui::DragValue::new(&mut self.config.interval_ms)
-                                    .range(200..=5_000),
-                            );
-                            ui.end_row();
-                            ui.label("ICMP 载荷 (bytes)");
-                            ui.add(
-                                egui::DragValue::new(&mut self.config.payload_size)
-                                    .range(0..=1_472),
-                            );
-                            ui.label("最大并发");
-                            ui.add(egui::DragValue::new(&mut self.config.concurrency).range(1..=4));
-                            ui.end_row();
-                        });
-                    ui.horizontal_wrapped(|ui| {
-                        let mut finite = self.config.total_rounds.is_some();
-                        if ui.checkbox(&mut finite, "有限轮数").changed() {
-                            self.config.total_rounds = finite.then_some(10);
-                        }
-                        if let Some(rounds) = &mut self.config.total_rounds {
-                            ui.add(egui::DragValue::new(rounds).range(1..=100));
-                        } else {
-                            ui.label("持续运行，直到手动停止");
-                        }
-                        ui.checkbox(&mut self.config.resolve_hostnames, "异步解析跳点主机名");
+            egui::CollapsingHeader::new(
+                RichText::new("⚙ 高级探测参数配置")
+                    .strong()
+                    .color(palette.text),
+            )
+            .id_salt("mtr-advanced-parameters")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.add_space(ui::SPACE_8);
+                egui::Grid::new("mtr-advanced-grid")
+                    .num_columns(4)
+                    .spacing([16.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("最大跳数");
+                        ui.add(egui::DragValue::new(&mut self.config.max_hops).range(1..=64));
+                        ui.label("每跳探测");
+                        ui.add(egui::DragValue::new(&mut self.config.probes_per_hop).range(1..=10));
+                        ui.end_row();
+                        ui.label("单次超时 (ms)");
+                        ui.add(
+                            egui::DragValue::new(&mut self.config.timeout_ms).range(100..=5_000),
+                        );
+                        ui.label("探测间隔 (ms)");
+                        ui.add(
+                            egui::DragValue::new(&mut self.config.interval_ms).range(200..=5_000),
+                        );
+                        ui.end_row();
+                        ui.label("ICMP 载荷 (bytes)");
+                        ui.add(
+                            egui::DragValue::new(&mut self.config.payload_size).range(0..=1_472),
+                        );
+                        ui.label("最大并发");
+                        ui.add(egui::DragValue::new(&mut self.config.concurrency).range(1..=4));
+                        ui.end_row();
                     });
+                ui.horizontal_wrapped(|ui| {
+                    let mut finite = self.config.total_rounds.is_some();
+                    if ui.checkbox(&mut finite, "有限轮数").changed() {
+                        self.config.total_rounds = finite.then_some(10);
+                    }
+                    if let Some(rounds) = &mut self.config.total_rounds {
+                        ui.add(egui::DragValue::new(rounds).range(1..=100));
+                    } else {
+                        ui.label("持续运行，直到手动停止");
+                    }
+                    ui.checkbox(&mut self.config.resolve_hostnames, "异步解析跳点主机名");
                 });
+            });
         });
 
         ui.add_space(ui::SPACE_12);
@@ -197,30 +197,80 @@ impl ToolModule for MtrTool {
 
 impl MtrTool {
     fn render_results(&self, ui: &mut egui::Ui) {
+        let palette = ui::palette_for_ui(ui);
         let Some(progress) = &self.progress else {
             if let Some(Err(error)) = &self.result {
                 let (title, detail) = error.user_message();
-                ui::state_card(ui, title, &detail, ui::danger_text(ui));
+                ui::state_card(ui, title, &detail, palette.danger_text);
             } else if self.busy {
                 ui::state_card(
                     ui,
-                    "正在探测",
-                    "正在解析目标并探测第一个跳点。",
-                    ui::success_text(ui),
+                    "正在发起路径探测",
+                    "正在解析目标主机并发送 ICMP TTL 递增探测包...",
+                    palette.accent,
                 );
             } else if !self.busy {
-                ui::state_card(ui, "等待开始", "输入目标主机后运行 MTR。", ui::accent(ui));
+                ui::state_card(
+                    ui,
+                    "等待开始诊断",
+                    "输入目标域名或 IP 地址后点击“开始 MTR 诊断”。",
+                    palette.accent,
+                );
             }
             return;
         };
+
+        let active_hops = progress.hops.iter().filter(|hop| hop.sent > 0).count();
+        let tile_w = ((ui.available_width() - ui::SPACE_12 * 2.0) / 3.0).max(130.0);
+
+        ui.horizontal_wrapped(|ui| {
+            ui::metric_tile(
+                ui,
+                tile_w,
+                "探测进行轮数",
+                &format!("第 {} 轮", progress.round),
+                "",
+                palette.accent,
+            );
+            ui::metric_tile(
+                ui,
+                tile_w,
+                "已发现跳点数",
+                &format!("{active_hops} 跳"),
+                "",
+                palette.accent_secondary,
+            );
+            ui::metric_tile(
+                ui,
+                tile_w,
+                "链路探测状态",
+                if self.busy { "PROBING" } else { "STOPPED" },
+                if self.busy {
+                    "逐跳探测中"
+                } else {
+                    "已停止/完成"
+                },
+                if self.busy {
+                    palette.success_text
+                } else {
+                    palette.weak
+                },
+            );
+        });
+        ui.add_space(ui::SPACE_12);
+
         let result_height = result_table_height(ui.ctx().screen_rect().height());
-        ui::card(ui, |ui| {
+        ui::tech_card(ui, palette.accent, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(format!("第 {} 轮 · {}", progress.round, progress.host)).strong(),
+                    RichText::new(format!("逐跳链路拓扑与时延表 ({})", progress.host))
+                        .strong()
+                        .size(14.5)
+                        .color(palette.text),
                 );
                 if self.busy {
-                    ui.label(RichText::new("运行中").color(ui::success_text(ui)));
+                    ui.add_space(ui::SPACE_4);
+                    ui::status_pill(ui, "PROBING", palette.success_text);
                 }
             });
             ui.add_space(ui::SPACE_8);
@@ -239,7 +289,7 @@ impl MtrTool {
                                 "跳数", "地址", "发送", "接收", "丢包", "最近", "平均", "最小",
                                 "最大", "状态",
                             ] {
-                                ui.label(RichText::new(header).strong());
+                                ui.label(RichText::new(header).strong().color(palette.text));
                             }
                             ui.end_row();
                             for hop in progress.hops.iter().filter(|hop| hop.sent > 0) {
@@ -257,8 +307,8 @@ impl MtrTool {
                 "已完成"
             };
             ui.label(
-                RichText::new(format!("{state}，完成 {} 轮", result.rounds))
-                    .color(ui::success_text(ui)),
+                RichText::new(format!("{state}，完成 {} 轮探测", result.rounds))
+                    .color(palette.success_text),
             );
         }
     }

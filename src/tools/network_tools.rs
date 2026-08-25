@@ -172,12 +172,34 @@ impl ToolModule for DnsLookupTool {
         match &self.result {
             Some(Ok(result)) => {
                 let palette = ui::palette_for_ui(ui);
-                ui::card(ui, |ui| {
+                ui::tech_card(ui, palette.accent, |ui| {
+                    let tile_w = ((ui.available_width() - ui::SPACE_12) / 2.0).max(140.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui::metric_tile(
+                            ui,
+                            tile_w,
+                            "解析记录条数",
+                            &result.records.len().to_string(),
+                            "条记录",
+                            palette.accent,
+                        );
+                        ui::metric_tile(
+                            ui,
+                            tile_w,
+                            "查询目标域名",
+                            &result.host,
+                            "",
+                            palette.accent_secondary,
+                        );
+                    });
+                    ui.add_space(ui::SPACE_12);
+
                     ui.horizontal(|ui| {
                         ui.label(
-                            RichText::new(format!("查询结果：共 {} 条记录", result.records.len()))
+                            RichText::new(format!("资源记录清单 ({} 条)", result.records.len()))
                                 .strong()
-                                .size(14.5),
+                                .size(14.5)
+                                .color(palette.text),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui::small_action_button(ui, "复制全部记录").clicked() {
@@ -214,18 +236,21 @@ impl ToolModule for DnsLookupTool {
                             );
                             ui.add_space(ui::SPACE_4);
                             ui.add(
+                                egui::Label::new(RichText::new(&record.name).color(palette.text))
+                                    .wrap(),
+                            );
+                            ui.colored_label(palette.weak, "→");
+                            ui.add(
                                 egui::Label::new(
-                                    RichText::new(&record.name).color(ui.visuals().text_color()),
+                                    RichText::new(&record.value)
+                                        .monospace()
+                                        .strong()
+                                        .color(palette.accent),
                                 )
                                 .wrap(),
-                            );
-                            ui.colored_label(palette.weak, "➔");
-                            ui.add(
-                                egui::Label::new(RichText::new(&record.value).monospace().strong())
-                                    .wrap(),
                             )
                             .on_hover_text(&record.value);
-                            ui.colored_label(palette.weak, format!("(TTL {})", record.ttl));
+                            ui.colored_label(palette.weak, format!("(TTL {}s)", record.ttl));
                         });
                         ui.add_space(2.0);
                     }
@@ -233,7 +258,7 @@ impl ToolModule for DnsLookupTool {
                     ui.separator();
                     ui.add_space(ui::SPACE_8);
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new("关联诊断：").color(ui.visuals().weak_text_color()));
+                        ui.label(RichText::new("联动诊断：").color(palette.weak));
                         if ui::secondary_button(ui, "Ping 此主机").clicked() {
                             actions.push(AppAction::InvokeTool(ToolInvocation::host(
                                 "ping",
@@ -292,14 +317,15 @@ impl ToolModule for PingTool {
     }
     fn ui(&mut self, ui: &mut egui::Ui, _context: ToolUiContext) -> Vec<AppAction> {
         let mut actions = Vec::new();
+        let palette = ui::palette_for_ui(ui);
         ui::page_heading(
             ui,
-            "Ping 测试",
-            "发送 ICMP Echo 数据包测量网络往返时延与稳定性。",
+            "Ping 连通性测试",
+            "发送原生 ICMP Echo 数据包测量网络往返时延与丢包率。",
         );
         ui.add_space(ui::SPACE_16);
-        ui::card(ui, |ui| {
-            if input_row(ui, &mut self.host, "开始 Ping", self.busy) {
+        ui::tech_card(ui, palette.accent, |ui| {
+            if input_row(ui, &mut self.host, "开始 Ping 测试", self.busy) {
                 actions.push(AppAction::RunPing {
                     host: self.host.clone(),
                     count: self.count.clamp(1, 10),
@@ -346,78 +372,84 @@ impl ToolModule for PingTool {
         ui.add_space(ui::SPACE_16);
         if self.busy && !self.progress.is_empty() {
             ui::card(ui, |ui| {
-                ui.label(RichText::new("测试进度...").strong());
+                ui.label(
+                    RichText::new("探测进行中...")
+                        .strong()
+                        .color(palette.accent),
+                );
                 ui.add_space(ui::SPACE_4);
                 for message in &self.progress {
-                    ui.label(RichText::new(message).monospace().size(12.5));
+                    ui.label(
+                        RichText::new(message)
+                            .monospace()
+                            .size(12.5)
+                            .color(palette.weak),
+                    );
                 }
             });
             ui.add_space(ui::SPACE_16);
         }
         match &self.result {
             Some(Ok(result)) => {
-                let palette = ui::palette_for_ui(ui);
-                ui::card(ui, |ui| {
+                ui::tech_card(ui, palette.accent, |ui| {
                     let loss_percent = if result.sent == 0 {
                         0.0
                     } else {
                         100.0 - result.received as f64 * 100.0 / result.sent as f64
                     };
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Ping 统计结果").strong().size(15.0));
-                        ui.add_space(ui::SPACE_8);
-                        let (loss_color, loss_bg) =
-                            if loss_percent == 0.0 {
-                                (
-                                    palette.success_text,
-                                    palette.success_text.gamma_multiply(
-                                        if ui.visuals().dark_mode { 0.22 } else { 0.12 },
-                                    ),
-                                )
-                            } else if loss_percent < 50.0 {
-                                (
-                                    palette.warning_text,
-                                    palette.warning_text.gamma_multiply(
-                                        if ui.visuals().dark_mode { 0.22 } else { 0.12 },
-                                    ),
-                                )
-                            } else {
-                                (
-                                    palette.danger_text,
-                                    palette
-                                        .danger_text
-                                        .gamma_multiply(if ui.visuals().dark_mode {
-                                            0.22
-                                        } else {
-                                            0.12
-                                        }),
-                                )
-                            };
-                        ui::badge(
+
+                    let tile_w = ((ui.available_width() - ui::SPACE_12 * 2.0) / 3.0).max(130.0);
+                    let avg_str = result
+                        .avg_ms
+                        .map_or_else(|| "-".into(), |v| format!("{v:.1} ms"));
+                    let loss_str = format!("{:.1}%", loss_percent);
+                    let sent_str = format!("{}/{}", result.received, result.sent);
+
+                    ui.horizontal_wrapped(|ui| {
+                        ui::metric_tile(ui, tile_w, "平均往返时延", &avg_str, "", palette.accent);
+                        ui::metric_tile(
                             ui,
-                            &format!(
-                                "丢包率: {:.1}% ({}/{})",
-                                loss_percent,
-                                result.sent - result.received,
-                                result.sent
-                            ),
-                            loss_color,
-                            loss_bg,
+                            tile_w,
+                            "数据包丢包率",
+                            &loss_str,
+                            &format!("收发: {sent_str}"),
+                            if loss_percent > 0.0 {
+                                palette.warning_text
+                            } else {
+                                palette.success_text
+                            },
                         );
-                        if let Some(avg) = result.avg_ms {
-                            ui::badge(
-                                ui,
-                                &format!("平均延迟: {:.1} ms", avg),
-                                palette.accent,
-                                palette.accent.gamma_multiply(if ui.visuals().dark_mode {
-                                    0.22
-                                } else {
-                                    0.12
-                                }),
-                            );
-                        }
+                        ui::metric_tile(
+                            ui,
+                            tile_w,
+                            "时延波动范围",
+                            &format!(
+                                "{} ~ {}",
+                                result.min_ms.map_or("-", |_| "min"),
+                                result.max_ms.map_or("-", |_| "max")
+                            ),
+                            &format!(
+                                "最小: {} · 最大: {}",
+                                result
+                                    .min_ms
+                                    .map_or_else(|| "-".into(), |v| format!("{v:.1}ms")),
+                                result
+                                    .max_ms
+                                    .map_or_else(|| "-".into(), |v| format!("{v:.1}ms"))
+                            ),
+                            palette.accent_secondary,
+                        );
                     });
                     ui.add_space(ui::SPACE_12);
+
+                    ui.label(
+                        RichText::new("ICMP 逐次回显记录")
+                            .strong()
+                            .size(14.5)
+                            .color(palette.text),
+                    );
+                    ui.add_space(ui::SPACE_8);
+
                     for sample in &result.samples {
                         let detail = sample.elapsed_ms.map_or_else(
                             || sample.error.clone().unwrap_or_else(|| "超时/失败".into()),
@@ -427,8 +459,12 @@ impl ToolModule for PingTool {
                             .ttl
                             .map_or_else(String::new, |value| format!("  TTL={value}"));
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(&sample.address).monospace());
-                            ui.label(RichText::new(format!("➔  {detail}{ttl}")).strong().color(
+                            ui.label(
+                                RichText::new(&sample.address)
+                                    .monospace()
+                                    .color(palette.text),
+                            );
+                            ui.label(RichText::new(format!("→  {detail}{ttl}")).strong().color(
                                 if sample.elapsed_ms.is_some() {
                                     palette.success_text
                                 } else {
@@ -444,19 +480,13 @@ impl ToolModule for PingTool {
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(format!(
-                                "往返时延：最小 {} · 平均 {} · 最大 {}",
-                                result
-                                    .min_ms
-                                    .map_or_else(|| "-".into(), |v| format!("{v:.1} ms")),
-                                result
-                                    .avg_ms
-                                    .map_or_else(|| "-".into(), |v| format!("{v:.1} ms")),
-                                result
-                                    .max_ms
-                                    .map_or_else(|| "-".into(), |v| format!("{v:.1} ms")),
+                                "统计：已发送 {} 个，已接收 {} 个，丢失 {} 个",
+                                result.sent,
+                                result.received,
+                                result.sent.saturating_sub(result.received)
                             ))
                             .size(13.0)
-                            .color(ui.visuals().weak_text_color()),
+                            .color(palette.weak),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui::secondary_button(ui, "TCP 测试 443").clicked() {
@@ -526,13 +556,14 @@ impl ToolModule for TcpProbeTool {
     }
     fn ui(&mut self, ui: &mut egui::Ui, _context: ToolUiContext) -> Vec<AppAction> {
         let mut actions = Vec::new();
+        let palette = ui::palette_for_ui(ui);
         ui::page_heading(
             ui,
-            "TCP 端口测试",
-            "发起轻量 TCP 三次握手测试端口连通性，不发送应用层负载。",
+            "TCP 握手与端口连通性测试",
+            "发起轻量原生 TCP 三次握手测试远端端口连通性与连接耗时。",
         );
         ui.add_space(ui::SPACE_16);
-        ui::card(ui, |ui| {
+        ui::tech_card(ui, palette.accent, |ui| {
             let available_width = ui.available_width();
             match ui::action_layout(available_width) {
                 ui::ActionLayout::Horizontal => {
@@ -590,58 +621,81 @@ impl ToolModule for TcpProbeTool {
         ui.add_space(ui::SPACE_16);
         match &self.result {
             Some(Ok(result)) => {
-                let palette = ui::palette_for_ui(ui);
-                ui::card(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("测试结果").strong().size(15.0));
-                        ui.add_space(ui::SPACE_8);
-                        if result.success {
-                            ui::badge(
+                ui::tech_card(
+                    ui,
+                    if result.success {
+                        palette.success_text
+                    } else {
+                        palette.danger_text
+                    },
+                    |ui| {
+                        let tile_w = ((ui.available_width() - ui::SPACE_12) / 2.0).max(140.0);
+                        let latency_str = result
+                            .attempts
+                            .first()
+                            .map_or_else(|| "-".into(), |a| format!("{:.1} ms", a.elapsed_ms));
+                        ui.horizontal_wrapped(|ui| {
+                            ui::metric_tile(
                                 ui,
-                                "TCP 握手成功",
-                                palette.success_text,
-                                palette
-                                    .success_text
-                                    .gamma_multiply(if ui.visuals().dark_mode {
-                                        0.22
-                                    } else {
-                                        0.12
-                                    }),
+                                tile_w,
+                                "TCP 握手状态",
+                                if result.success {
+                                    "成功 (ESTABLISHED)"
+                                } else {
+                                    "失败 (FAILED)"
+                                },
+                                if result.success {
+                                    "三次握手完成"
+                                } else {
+                                    "连接被拒/超时"
+                                },
+                                if result.success {
+                                    palette.success_text
+                                } else {
+                                    palette.danger_text
+                                },
                             );
-                        } else {
-                            ui::badge(
+                            ui::metric_tile(
                                 ui,
-                                "TCP 连接失败",
-                                palette.danger_text,
-                                palette
-                                    .danger_text
-                                    .gamma_multiply(if ui.visuals().dark_mode {
-                                        0.22
-                                    } else {
-                                        0.12
-                                    }),
+                                tile_w,
+                                "连接往返时延",
+                                &latency_str,
+                                &format!("目标端口: {}", result.port),
+                                palette.accent,
                             );
-                        }
-                    });
-                    ui.add_space(ui::SPACE_12);
-                    for attempt in &result.attempts {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(&attempt.address).monospace());
-                            ui.colored_label(palette.weak, "➔");
-                            ui.label(
-                                RichText::new(format!("{:.1} ms", attempt.elapsed_ms))
-                                    .strong()
-                                    .color(palette.accent),
-                            );
-                            ui.label(RichText::new(&attempt.status).color(if result.success {
-                                palette.success_text
-                            } else {
-                                palette.danger_text
-                            }));
                         });
-                        ui.add_space(1.0);
-                    }
-                });
+                        ui.add_space(ui::SPACE_12);
+
+                        ui.label(
+                            RichText::new("目标地址握手明细")
+                                .strong()
+                                .size(14.5)
+                                .color(palette.text),
+                        );
+                        ui.add_space(ui::SPACE_8);
+                        for attempt in &result.attempts {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(&attempt.address)
+                                        .monospace()
+                                        .color(palette.text),
+                                );
+                                ui.colored_label(palette.weak, "→");
+                                ui.label(
+                                    RichText::new(format!("{:.1} ms", attempt.elapsed_ms))
+                                        .strong()
+                                        .color(palette.accent),
+                                );
+                                ui.label(RichText::new(&attempt.status).color(if result.success {
+                                    palette.success_text
+                                } else {
+                                    palette.danger_text
+                                }));
+                            });
+                            ui.add_space(1.0);
+                        }
+                    },
+                );
             }
             Some(Err(error)) => state(ui, self.busy, Some(error)),
             None => state(ui, self.busy, None),

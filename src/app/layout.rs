@@ -1,7 +1,7 @@
 //! 应用布局断点与内容尺寸规则。
 
-/// 主内容列的最大宽度，避免宽屏下信息行被拉得过长。
-pub(super) const MAX_CONTENT_WIDTH: f32 = 1040.0;
+/// 主内容列的最大宽度，适应宽屏与多列数据表格。
+pub(super) const MAX_CONTENT_WIDTH: f32 = 1600.0;
 
 /// 进程树与详情并排显示的最小可用宽度。
 pub(super) const DETAIL_SPLIT_WIDTH: f32 = 760.0;
@@ -14,7 +14,6 @@ pub(super) const fn content_width(available_width: f32) -> f32 {
         MAX_CONTENT_WIDTH
     }
 }
-
 /// 判断是否有足够空间并排显示列表和详情。
 pub(super) const fn use_detail_split(available_width: f32) -> bool {
     available_width >= DETAIL_SPLIT_WIDTH
@@ -26,7 +25,7 @@ mod tests {
 
     #[test]
     fn content_width_is_bounded_without_negative_space() {
-        assert_eq!(content_width(1_200.0), MAX_CONTENT_WIDTH);
+        assert_eq!(content_width(2_000.0), MAX_CONTENT_WIDTH);
         assert_eq!(content_width(720.0), 720.0);
         assert_eq!(content_width(0.0), 0.0);
     }
