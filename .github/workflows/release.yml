@@ -45,9 +45,11 @@ jobs:
           fi
 
           tag="v${version}"
+          notes_file="docs/releases/${tag}.md"
           should_release="true"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "notes_file=${notes_file}" >> "$GITHUB_OUTPUT"
 
           if [[ "$EVENT_NAME" == "push" ]]; then
             if [[ -z "${BEFORE_SHA:-}" || "$BEFORE_SHA" =~ ^0+$ ]]; then
@@ -101,6 +103,18 @@ jobs:
 
           cargo metadata --locked --no-deps --format-version 1 >/dev/null
 
+      - name: 校验发布说明
+        if: steps.version.outputs.should_release == 'true'
+        env:
+          NOTES_FILE: ${{ steps.version.outputs.notes_file }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f "$NOTES_FILE" ]]; then
+            echo "::error::缺少当前版本的详细更新说明：${NOTES_FILE}"
+            exit 1
+          fi
+
       - name: 运行测试
         if: steps.version.outputs.should_release == 'true'
         run: cargo test --locked
@@ -128,6 +142,31 @@ jobs:
           echo "artifact=dist/${artifact}" >> "$GITHUB_OUTPUT"
           echo "checksum=dist/${artifact}.sha256" >> "$GITHUB_OUTPUT"
 
+      - name: 合并详细更新说明
+        if: steps.version.outputs.should_release == 'true'
+        id: notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          MANUAL_NOTES: ${{ steps.version.outputs.notes_file }}
+        run: |
+          set -euo pipefail
+
+          generated_notes="dist/generated-release-notes.md"
+          combined_notes="dist/release-notes.md"
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            --raw-field "tag_name=${TAG}" \
+            --raw-field "target_commitish=${GITHUB_SHA}" \
+            --jq '.body' > "$generated_notes"
+
+          {
+            cat "$MANUAL_NOTES"
+            printf '\n\n---\n\n'
+            cat "$generated_notes"
+          } > "$combined_notes"
+
+          echo "path=${combined_notes}" >> "$GITHUB_OUTPUT"
+
       - name: 创建 GitHub Release
         if: steps.version.outputs.should_release == 'true'
         env:
@@ -135,9 +174,10 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
           ARTIFACT: ${{ steps.package.outputs.artifact }}
           CHECKSUM: ${{ steps.package.outputs.checksum }}
+          NOTES_FILE: ${{ steps.notes.outputs.path }}
         run: |
           gh release create "$TAG" "$ARTIFACT" "$CHECKSUM" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "ToolDeck ${TAG}" \
-            --generate-notes
+            --notes-file "$NOTES_FILE"
