@@ -2833,7 +2833,7 @@ dependencies = [
 
 [[package]]
 name = "windows-toolbox"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "directories",

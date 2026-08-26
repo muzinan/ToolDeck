@@ -281,7 +281,7 @@ fn ping_once_with_ttl(
             let status = unsafe {
                 IcmpSendEcho(
                     handle,
-                    u32::from(value),
+                    ipv4_to_win32_address(value),
                     payload.as_ptr().cast(),
                     payload_size,
                     options.as_ref().map(|value| value as *const _),
@@ -292,7 +292,7 @@ fn ping_once_with_ttl(
             };
             unsafe { IcmpCloseHandle(handle) }.ok();
             if status == 0 {
-                return Err("请求超时或主机不可达".into());
+                return Err("ICMP 请求超时或未收到回显".into());
             }
             let response = unsafe { &*(reply.as_ptr().cast::<ICMP_ECHO_REPLY>()) };
             if response.Status != 0 {
@@ -333,7 +333,7 @@ fn ping_once_with_ttl(
             };
             unsafe { IcmpCloseHandle(handle) }.ok();
             if status == 0 {
-                return Err("请求超时或主机不可达".into());
+                return Err("ICMP 请求超时或未收到回显".into());
             }
             let response = unsafe { &*(reply.as_ptr().cast::<ICMPV6_ECHO_REPLY_LH>()) };
             if response.Status != 0 {
@@ -733,7 +733,7 @@ mod tests {
     }
 
     #[test]
-    fn mtr_ipv4_win32_address_round_trip_preserves_network_bytes() {
+    fn ipv4_win32_address_round_trip_preserves_network_bytes() {
         let address = Ipv4Addr::new(192, 0, 2, 10);
         let raw = ipv4_to_win32_address(address);
 
