@@ -16,7 +16,7 @@ use crate::{
     model::{
         AppError, DnsRecordType, DnsResult, FileLockResult, MtrConfig, MtrProgress, MtrResult,
         NetworkEndpoint, PingAddressFamily, PingSummary, ProcessCommandLine, ProcessInfo,
-        ProcessTreeSnapshot, TcpProbeResult,
+        ProcessTreeSnapshot, SerialPortDescriptor, TcpProbeResult,
     },
     platform::windows,
 };
@@ -65,6 +65,7 @@ pub enum TaskRequest {
         host: String,
         config: MtrConfig,
     },
+    SerialPorts,
 }
 
 impl TaskRequest {
@@ -80,6 +81,7 @@ impl TaskRequest {
             Self::Ping { .. } => "ping",
             Self::TcpProbe { .. } => "tcp-probe",
             Self::Mtr { .. } => "mtr",
+            Self::SerialPorts => "serial-debug",
         }
     }
 }
@@ -107,6 +109,7 @@ pub enum TaskResult {
     Ping(Result<PingSummary, AppError>),
     TcpProbe(Result<TcpProbeResult, AppError>),
     Mtr(Result<MtrResult, AppError>),
+    SerialPorts(Result<Vec<SerialPortDescriptor>, AppError>),
 }
 
 impl TaskResult {
@@ -123,14 +126,19 @@ impl TaskResult {
             Self::Dns(Err(error))
             | Self::Ping(Err(error))
             | Self::TcpProbe(Err(error))
-            | Self::Mtr(Err(error)) => Some(error),
+            | Self::Mtr(Err(error))
+            | Self::SerialPorts(Err(error)) => Some(error),
             Self::FileLocks(Ok(_))
             | Self::Ports(Ok(_))
             | Self::Process(Ok(_))
             | Self::ProcessTree(Ok(_))
             | Self::ProcessTerminated(Ok(_)) => None,
             Self::ProcessCommandLine { result: Ok(_), .. } => None,
-            Self::Dns(Ok(_)) | Self::Ping(Ok(_)) | Self::TcpProbe(Ok(_)) | Self::Mtr(Ok(_)) => None,
+            Self::Dns(Ok(_))
+            | Self::Ping(Ok(_))
+            | Self::TcpProbe(Ok(_))
+            | Self::Mtr(Ok(_))
+            | Self::SerialPorts(Ok(_)) => None,
         }
     }
 }
@@ -334,6 +342,7 @@ fn execute(request: TaskRequest) -> TaskResult {
             timeout_ms,
         } => TaskResult::TcpProbe(windows::tcp_probe(&host, port, timeout_ms)),
         TaskRequest::Mtr { host, config } => TaskResult::Mtr(windows::mtr_host(&host, &config)),
+        TaskRequest::SerialPorts => TaskResult::SerialPorts(windows::query_serial_ports()),
     }
 }
 

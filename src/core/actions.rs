@@ -2,7 +2,10 @@
 
 use std::path::PathBuf;
 
-use crate::{core::invocation::ToolInvocation, model::ProcessSummary};
+use crate::{
+    core::invocation::ToolInvocation,
+    model::{CommunicationCommand, CommunicationConfig, CommunicationKind, ProcessSummary},
+};
 
 /// 工具 UI 仅返回动作，不直接引用其他工具或 Windows 平台对象。
 #[derive(Clone, Debug)]
@@ -13,6 +16,17 @@ pub enum AppAction {
     ExportPortsCsv {
         content: String,
     },
+    ExportCommunicationLog {
+        content: String,
+        file_name: String,
+    },
+    StartCommunication(CommunicationConfig),
+    SendCommunication {
+        kind: CommunicationKind,
+        command: CommunicationCommand,
+    },
+    StopCommunication(CommunicationKind),
+    RefreshSerialPorts,
     RunDns {
         host: String,
         record_type: crate::model::DnsRecordType,

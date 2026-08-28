@@ -777,6 +777,65 @@ pub fn paint_tool_icon(
             painter.circle_filled(p2, size * 0.09, color);
             painter.circle_filled(p3, size * 0.08, color);
         }
+        ToolIcon::TcpDebug => {
+            // 两个端点与双向箭头表示可持续双向 TCP 字节流。
+            let left = rect.left_center() + Vec2::new(size * 0.04, 0.0);
+            let right = rect.right_center() - Vec2::new(size * 0.04, 0.0);
+            painter.rect_stroke(
+                egui::Rect::from_center_size(left, Vec2::splat(size * 0.18)),
+                CornerRadius::same(2),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.rect_stroke(
+                egui::Rect::from_center_size(right, Vec2::splat(size * 0.18)),
+                CornerRadius::same(2),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.arrow(
+                left + Vec2::new(size * 0.12, -size * 0.08),
+                Vec2::new(size * 0.25, 0.0),
+                stroke,
+            );
+            painter.arrow(
+                right - Vec2::new(size * 0.12, -size * 0.08),
+                Vec2::new(-size * 0.25, 0.0),
+                stroke,
+            );
+        }
+        ToolIcon::UdpDebug => {
+            // 中心数据报向多个端点发散，区别于 TCP 的持续连接。
+            let center = rect.center();
+            painter.circle_stroke(center, size * 0.10, stroke);
+            for offset in [
+                Vec2::new(-size * 0.24, -size * 0.20),
+                Vec2::new(size * 0.24, -size * 0.20),
+                Vec2::new(0.0, size * 0.28),
+            ] {
+                let endpoint = center + offset;
+                painter.arrow(center + offset * 0.35, offset * 0.50, stroke);
+                painter.circle_filled(endpoint, size * 0.065, color);
+            }
+        }
+        ToolIcon::SerialDebug => {
+            // DB9 风格轮廓与引脚阵列表示串口设备。
+            let connector =
+                egui::Rect::from_center_size(rect.center(), Vec2::new(size * 0.48, size * 0.34));
+            painter.rect_stroke(
+                connector,
+                CornerRadius::same(3),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            for row in 0..2 {
+                for column in 0..3 {
+                    let x = connector.left() + size * (0.12 + column as f32 * 0.12);
+                    let y = connector.top() + size * (0.10 + row as f32 * 0.14);
+                    painter.circle_filled(egui::pos2(x, y), size * 0.035, color);
+                }
+            }
+        }
     }
 }
 

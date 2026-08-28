@@ -28,6 +28,9 @@ pub enum ToolIcon {
     Ping,
     TcpProbe,
     Mtr,
+    TcpDebug,
+    UdpDebug,
+    SerialDebug,
 }
 
 impl ToolCategory {
@@ -207,8 +210,8 @@ mod tests {
     #[test]
     fn registry_exposes_all_v0_tools() {
         let registry = build_registry();
-        assert_eq!(registry.descriptors().len(), 7);
-        assert_eq!(registry.categories().len(), 3);
+        assert_eq!(registry.descriptors().len(), 10);
+        assert_eq!(registry.categories().len(), 4);
     }
 
     #[test]
@@ -290,6 +293,30 @@ mod tests {
                 .unwrap()
                 .icon,
             ToolIcon::Mtr
+        );
+        assert_eq!(
+            descriptors
+                .iter()
+                .find(|tool| tool.id == "tcp-debug")
+                .unwrap()
+                .icon,
+            ToolIcon::TcpDebug
+        );
+        assert_eq!(
+            descriptors
+                .iter()
+                .find(|tool| tool.id == "udp-debug")
+                .unwrap()
+                .icon,
+            ToolIcon::UdpDebug
+        );
+        assert_eq!(
+            descriptors
+                .iter()
+                .find(|tool| tool.id == "serial-debug")
+                .unwrap()
+                .icon,
+            ToolIcon::SerialDebug
         );
     }
 }

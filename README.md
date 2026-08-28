@@ -1,6 +1,6 @@
 # Windows Toolbox
 
-Windows Toolbox 是一个面向 Windows 10/11 x64 的原生系统工具集合。V0.3.2 提供文件、端口、进程、基础网络和 MTR 路径诊断，并采用可扩展的 Tool Host + Tool Module 架构。
+Windows Toolbox 是一个面向 Windows 10/11 x64 的原生系统工具集合。V0.4.0 提供文件、端口、进程、网络诊断、MTR 路径诊断，以及 TCP、UDP、串口持续通信调试，并采用可扩展的 Tool Host + Tool Module 架构。
 
 ## 当前功能
 
@@ -10,6 +10,10 @@ Windows Toolbox 是一个面向 Windows 10/11 x64 的原生系统工具集合。
 - 资源管理器集成：在设置中按用户选择注册或移除 `HKCU\Software\Classes\*\shell\WindowsToolbox` 下的经典 Shell Verb，不需要管理员权限。Windows 11 上该菜单可能位于“显示更多选项”。
 - 单实例：后续启动会通过命名管道将 `ToolInvocation` 转发给已运行实例，并激活对应工具页面。
 - 后台执行：固定四个 Worker 线程与容量 32 的有界请求队列提供背压；同一工具只接收最新请求结果。
+- TCP 调试：支持 IPv4/IPv6 客户端与最多 32 个客户端的服务端，按选中客户端或全部客户端持续收发原始字节流。
+- UDP 调试：支持 IPv4/IPv6 单播、IPv4 广播、单个 IPv4 组播组，以及回复选中接收来源。
+- 串口调试：枚举 COM 与 USB 描述，支持波特率、数据位、校验位、停止位、流控和读取超时配置。
+- 通信记录：TCP、UDP 与串口支持独立文本/HEX 显示、CRLF、定时发送、有界记录、方向过滤、复制与 UTF-8 `.log` 导出。
 - 本地诊断：设置采用原子替换和唯一损坏备份，脱敏诊断日志按 512 KiB、最多三份轮转。
 
 ## 架构
@@ -23,13 +27,16 @@ Tool Host (src/app/mod.rs)
   │     ├── DNS Lookup Tool
   │     ├── Ping Tool
   │     ├── TCP Probe Tool
-  │     └── MTR Tool
+  │     ├── MTR Tool
+  │     ├── TCP Debug Tool
+  │     ├── UDP Debug Tool
+  │     └── Serial Debug Tool
   ├── App Shell (src/app/)
   │     ├── state / navigation / content / layout
   │     └── actions / overlay
-  ├── Core: Invocation / Action / Worker
-  ├── Domain Model: File / Network / Process / Error
-  └── Windows Platform Layer: Restart Manager / IP Helper / Toolhelp / Shell / IPC
+  ├── Core: Invocation / Action / Worker / Communication Dispatcher
+  ├── Domain Model: File / Network / Process / Communication / Error
+  └── Windows Platform Layer: Restart Manager / IP Helper / Toolhelp / Serial / Shell / IPC
 ```
 
 新增一个内建工具的方式是：在 `src/tools/` 创建模块，实现 `ToolModule`，然后在 `src/tools/mod.rs` 的 `build_registry()` 中注册。导航、搜索和首页会自动发现其描述信息。
@@ -47,6 +54,8 @@ Toolbox.exe --tool mtr --host example.com
 ```
 
 所有命令行、资源管理器右键菜单和跨工具跳转都会转换为同一个 `ToolInvocation` 结构。
+
+TCP、UDP 与串口通信调试不增加命令行入口，连接参数、发送载荷和通信记录也不会自动持久化。
 
 ## 构建
 
@@ -69,7 +78,8 @@ target\x86_64-pc-windows-msvc\release\windows-toolbox.exe
 ## 权限与限制
 
 - 默认以普通用户权限运行；部分系统进程的信息或结束操作会因访问限制而失败，并向用户明确提示。
-- V0.3.2 通过公开 Toolhelp、WMI/COM 和 Windows ICMP API 读取当前选中进程的命令行并执行 MTR；不使用未公开 NT API，也不实现深度句柄扫描、强制关闭 Handle、驱动、注入或权限绕过。
+- V0.4.0 通过公开 Toolhelp、WMI/COM、Windows ICMP API、标准套接字和 serialport 访问系统能力；不使用未公开 NT API，也不实现深度句柄扫描、强制关闭 Handle、驱动、注入或权限绕过。
+- TCP 调试只收发原始字节流，不提供 TLS；UDP 当前不支持 IPv6 广播或 IPv6 组播；串口采用独占打开，断线后需手动重连。
 
 网络工具：
 

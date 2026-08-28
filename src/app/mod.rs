@@ -16,12 +16,13 @@ use eframe::{
 use crate::{
     core::{
         actions::AppAction,
+        communication::CommunicationDispatcher,
         invocation::ToolInvocation,
         worker::{RequestId, TaskDispatcher, TaskEvent, TaskEventEnvelope, TaskRequest},
     },
     model::{AppError, ProcessSummary},
     platform::windows::{
-        open_directory, open_file_location, pick_file, save_csv, shell_context_menu,
+        open_directory, open_file_location, pick_file, save_csv, save_log, shell_context_menu,
     },
     settings::{AppSettings, SettingsStore, ThemePreference},
     tools::{ToolCategory, ToolDescriptor, ToolRegistry, ToolUiContext, build_registry},
@@ -49,6 +50,7 @@ pub struct ToolboxApp {
     settings: AppSettings,
     task_dispatcher: TaskDispatcher,
     task_receiver: Receiver<TaskEventEnvelope>,
+    communication_dispatcher: CommunicationDispatcher,
     latest_requests: HashMap<&'static str, RequestId>,
     invocation_receiver: Receiver<ToolInvocation>,
     pending_invocations: Vec<ToolInvocation>,
@@ -76,6 +78,7 @@ impl ToolboxApp {
         ui::configure_styles(&creation_context.egui_ctx);
         apply_theme(&creation_context.egui_ctx, settings.theme);
         let (task_dispatcher, task_receiver) = TaskDispatcher::new()?;
+        let communication_dispatcher = CommunicationDispatcher::new();
         Ok(Self {
             registry,
             page: Page::Home,
@@ -87,6 +90,7 @@ impl ToolboxApp {
             settings,
             task_dispatcher,
             task_receiver,
+            communication_dispatcher,
             latest_requests: HashMap::new(),
             invocation_receiver,
             pending_invocations: initial_invocation.into_iter().collect(),
@@ -133,6 +137,12 @@ impl ToolboxApp {
                         tool.handle_task_result(result);
                     }
                 }
+            }
+        }
+
+        for envelope in self.communication_dispatcher.drain_events() {
+            if let Some(tool) = self.registry.get_mut(envelope.kind.tool_id()) {
+                tool.handle_communication_event(envelope);
             }
         }
 
@@ -901,6 +911,9 @@ impl ToolboxApp {
             ui.label("• Ping 测试 · 真实 ICMP 往返延迟与丢包率测试");
             ui.label("• TCP 端口测试 · 无侵入式 TCP 三次握手连通性与时延测试");
             ui.label("• MTR 路径诊断 · 原生 ICMP 逐跳观察路由、延迟和丢包");
+            ui.label("• TCP 调试 · 客户端与多客户端服务端持续收发原始字节流");
+            ui.label("• UDP 调试 · 单播、IPv4 广播、IPv4 组播与来源回复");
+            ui.label("• 串口调试 · COM 口配置、持续收发与设备断开状态记录");
             ui.add_space(ui::SPACE_16);
             ui.label(
                 RichText::new("提示：默认以当前用户权限运行；查询受保护的系统进程或核心服务可能需要以管理员身份运行。")
@@ -931,6 +944,32 @@ impl ToolboxApp {
                     Ok(None) => {}
                     Err(error) => self.set_error_notice(error),
                 },
+                AppAction::ExportCommunicationLog { content, file_name } => {
+                    match save_log(&content, &file_name) {
+                        Ok(Some(path)) => self.set_notice(
+                            format!("通信记录已导出到 {}", path.display()),
+                            NoticeTone::Success,
+                        ),
+                        Ok(None) => {}
+                        Err(error) => self.set_error_notice(error),
+                    }
+                }
+                AppAction::StartCommunication(config) => {
+                    if let Err(error) = self.communication_dispatcher.start(config) {
+                        self.set_error_notice(error);
+                    }
+                }
+                AppAction::SendCommunication { kind, command } => {
+                    if let Err(error) = self.communication_dispatcher.send(kind, command) {
+                        self.set_error_notice(error);
+                    }
+                }
+                AppAction::StopCommunication(kind) => {
+                    if let Err(error) = self.communication_dispatcher.stop(kind) {
+                        self.set_error_notice(error);
+                    }
+                }
+                AppAction::RefreshSerialPorts => self.dispatch_task(TaskRequest::SerialPorts),
                 AppAction::RunDns {
                     host,
                     record_type,
