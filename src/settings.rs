@@ -24,16 +24,6 @@ pub enum ThemePreference {
     Dark,
 }
 
-impl ThemePreference {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::System => "跟随系统",
-            Self::Light => "浅色",
-            Self::Dark => "深色",
-        }
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AppSettings {

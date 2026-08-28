@@ -2,7 +2,7 @@
 //! 该模块拥有 HUD 顶栏、分类折叠手风琴侧边栏、主题管理、设置、后台任务协作与 Tool Invocation 路由。
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::PathBuf,
     sync::mpsc::Receiver,
     time::{Duration, Instant},
@@ -36,16 +36,15 @@ mod navigation;
 mod overlay;
 mod state;
 
-use state::{HomeViewMode, Notice, NoticeTone, Page};
+use state::{Notice, NoticeTone, Page};
 
 /// Tool Host：统一协调 Tool Registry、UI、后台任务和系统集成。
 pub struct ToolboxApp {
     registry: ToolRegistry,
     page: Page,
     search: String,
-    home_view_mode: HomeViewMode,
-    active_category_filter: Option<Option<ToolCategory>>, // None = All, Some(None) = Favorites, Some(Some(cat)) = Category
-    collapsed_categories: HashSet<ToolCategory>,
+    active_category: ToolCategory,
+    compact_tool_nav_open: bool,
     settings_store: SettingsStore,
     settings: AppSettings,
     task_dispatcher: TaskDispatcher,
@@ -83,9 +82,8 @@ impl ToolboxApp {
             registry,
             page: Page::Home,
             search: String::new(),
-            home_view_mode: HomeViewMode::Grid,
-            active_category_filter: None,
-            collapsed_categories: HashSet::new(),
+            active_category: ToolCategory::Network,
+            compact_tool_nav_open: false,
             settings_store,
             settings,
             task_dispatcher,
@@ -155,7 +153,7 @@ impl ToolboxApp {
         }
     }
 
-    /// 绘制顶部科技 HUD 状态栏（应用 Logo、当前位置面包屑、主题切换与快捷操作）。
+    /// 绘制顶部全局栏，集中放置品牌、搜索与全局入口。
     fn render_top_hud(&mut self, context: &egui::Context) -> Vec<AppAction> {
         let mut actions = Vec::new();
         let palette = ui::theme_palette(if context.style().visuals.dark_mode {
@@ -165,157 +163,70 @@ impl ToolboxApp {
         });
 
         egui::TopBottomPanel::top("toolbox-top-hud")
+            .exact_height(layout::TOP_BAR_HEIGHT)
             .frame(
                 egui::Frame::new()
                     .fill(palette.panel)
                     .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
-                    .inner_margin(egui::Margin::symmetric(16, 8)),
+                    .inner_margin(egui::Margin::symmetric(12, 7)),
             )
             .show(context, |ui| {
                 ui.horizontal(|ui| {
-                    // Logo 与品牌
-                    let logo_bg = palette.accent.gamma_multiply(if ui.visuals().dark_mode {
-                        0.20
-                    } else {
-                        0.12
-                    });
-                    ui::icon_badge(
-                        ui,
-                        crate::tools::ToolIcon::Process,
-                        28.0,
+                    let (logo_rect, _) =
+                        ui.allocate_exact_size(Vec2::splat(28.0), egui::Sense::hover());
+                    ui::paint_app_icon(
+                        ui.painter(),
+                        logo_rect.shrink(5.0),
+                        ui::AppIcon::Developer,
                         palette.accent,
-                        logo_bg,
                     );
                     ui.add_space(ui::SPACE_4);
                     ui.label(
-                        RichText::new("TOOLBOX")
+                        RichText::new("ToolDeck")
                             .strong()
-                            .monospace()
-                            .size(15.0)
+                            .size(16.0)
                             .color(palette.text),
                     );
-                    ui::badge(
-                        ui,
-                        concat!("v", env!("CARGO_PKG_VERSION")),
-                        palette.accent_secondary,
-                        palette.border_subtle,
-                    );
-
-                    // 状态微光指示灯
-                    ui.add_space(ui::SPACE_8);
-                    ui::status_pill(ui, "READY", palette.success_text);
-
                     ui.add_space(ui::SPACE_12);
                     ui.separator();
                     ui.add_space(ui::SPACE_12);
-
-                    // 面包屑导航
-                    match &self.page {
-                        Page::Home => {
-                            ui.label(RichText::new("控制中心").size(13.5).color(palette.weak));
-                            ui.label(
-                                RichText::new("/ 概览工作台")
-                                    .size(13.5)
-                                    .strong()
-                                    .color(palette.accent),
-                            );
-                        }
-                        Page::Tool(id) => {
-                            if let Some(desc) = self.registry.get(id).map(|t| t.descriptor()) {
-                                if ui
-                                    .link(RichText::new("控制中心").size(13.0).color(palette.weak))
-                                    .clicked()
-                                {
-                                    actions.push(AppAction::NavigateTo("home".into()));
-                                }
-                                ui.colored_label(palette.weak, "/");
-                                ui.label(
-                                    RichText::new(desc.category.label())
-                                        .size(13.0)
-                                        .color(palette.weak),
-                                );
-                                ui.colored_label(palette.weak, "/");
-                                ui.label(
-                                    RichText::new(desc.name)
-                                        .size(13.5)
-                                        .strong()
-                                        .color(palette.accent),
-                                );
-
-                                // 收藏快捷按钮
-                                let is_fav =
-                                    self.settings.favorite_tools.iter().any(|fav| fav == id);
-                                let fav_btn_text = if is_fav {
-                                    "★ 已收藏"
-                                } else {
-                                    "☆ 收藏"
-                                };
-                                let star_color = if is_fav {
-                                    palette.warning_text
-                                } else {
-                                    palette.weak
-                                };
-                                if ui
-                                    .button(
-                                        RichText::new(fav_btn_text).size(12.0).color(star_color),
-                                    )
-                                    .clicked()
-                                {
-                                    actions.push(AppAction::ToggleFavorite {
-                                        tool_id: id.clone(),
-                                    });
-                                }
-                            }
-                        }
-                        Page::Settings => {
-                            if ui
-                                .link(RichText::new("控制中心").size(13.0).color(palette.weak))
-                                .clicked()
-                            {
-                                actions.push(AppAction::NavigateTo("home".into()));
-                            }
-                            ui.colored_label(palette.weak, "/");
-                            ui.label(
-                                RichText::new("系统设置")
-                                    .size(13.5)
-                                    .strong()
-                                    .color(palette.accent),
-                            );
-                        }
-                        Page::About => {
-                            if ui
-                                .link(RichText::new("控制中心").size(13.0).color(palette.weak))
-                                .clicked()
-                            {
-                                actions.push(AppAction::NavigateTo("home".into()));
-                            }
-                            ui.colored_label(palette.weak, "/");
-                            ui.label(
-                                RichText::new("关于与架构")
-                                    .size(13.5)
-                                    .strong()
-                                    .color(palette.accent),
-                            );
-                        }
-                    }
-
-                    // 右侧控制区
+                    let search_width = (ui.available_width() - 132.0).clamp(180.0, 440.0);
+                    ui.add_sized(
+                        [search_width, ui::CONTROL_HEIGHT],
+                        ui::text_input(&mut self.search, "搜索工具"),
+                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // 主题切换快捷按钮
+                        if ui::icon_button(
+                            ui,
+                            ui::AppIcon::About,
+                            "关于与架构",
+                            self.page == Page::About,
+                        )
+                        .clicked()
+                        {
+                            actions.push(AppAction::NavigateTo("about".into()));
+                        }
+                        if ui::icon_button(
+                            ui,
+                            ui::AppIcon::Settings,
+                            "系统设置",
+                            self.page == Page::Settings,
+                        )
+                        .clicked()
+                        {
+                            actions.push(AppAction::NavigateTo("settings".into()));
+                        }
                         let next_theme = match self.settings.theme {
                             ThemePreference::Dark => ThemePreference::Light,
                             ThemePreference::Light => ThemePreference::System,
                             ThemePreference::System => ThemePreference::Dark,
                         };
-                        let theme_icon = match self.settings.theme {
-                            ThemePreference::Dark => "🌙 深色",
-                            ThemePreference::Light => "☀ 浅色",
-                            ThemePreference::System => "⚙ 跟随系统",
+                        let theme_name = match self.settings.theme {
+                            ThemePreference::Dark => "当前为深色主题，点击切换",
+                            ThemePreference::Light => "当前为浅色主题，点击切换",
+                            ThemePreference::System => "当前跟随系统主题，点击切换",
                         };
-                        if ui::small_action_button(ui, theme_icon)
-                            .on_hover_text("点击切换主题外观")
-                            .clicked()
-                        {
+                        if ui::icon_button(ui, ui::AppIcon::Theme, theme_name, false).clicked() {
                             self.settings.theme = next_theme;
                             apply_theme(ui.ctx(), self.settings.theme);
                             self.persist_settings();
@@ -327,7 +238,7 @@ impl ToolboxApp {
         actions
     }
 
-    /// 绘制左侧多层级折叠手风琴导航栏（支持海量工具分类归纳与实时计数）。
+    /// 绘制分类图标栏与当前分类工具栏；窄窗口仅永久保留分类栏。
     fn render_sidebar(&mut self, context: &egui::Context) -> Vec<AppAction> {
         let descriptors = if self.search.trim().is_empty() {
             Vec::new()
@@ -335,135 +246,152 @@ impl ToolboxApp {
             self.registry.search(&self.search)
         };
         let categories = self.registry.categories();
-        let all_descriptors = self.registry.descriptors();
-        let category_counts = navigation::category_counts(&all_descriptors);
+        let nav_layout = layout::navigation_layout(context.screen_rect().width());
         let mut actions = Vec::new();
 
-        egui::SidePanel::left("toolbox-sidebar")
+        egui::SidePanel::left("toolbox-category-rail")
             .resizable(false)
-            .default_width(260.0)
-            .min_width(260.0)
+            .exact_width(layout::CATEGORY_RAIL_WIDTH)
             .show(context, |ui| {
-                ui.add_space(ui::SPACE_12);
-
-                // 科技搜索输入框
-                let search_width = ui.available_width();
-                ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [search_width, ui::CONTROL_HEIGHT],
-                        ui::text_input(&mut self.search, "🔍 搜索全部工具 (中英/拼音)..."),
-                    );
+                ui.vertical_centered(|ui| {
+                    ui.add_space(ui::SPACE_8);
+                    if ui::icon_button_sized(
+                        ui,
+                        ui::AppIcon::Home,
+                        "首页",
+                        self.page == Page::Home,
+                        layout::CATEGORY_ROW_HEIGHT,
+                    )
+                    .clicked()
+                    {
+                        actions.push(AppAction::NavigateTo("home".into()));
+                    }
+                    ui.add_space(ui::SPACE_8);
+                    for category in categories {
+                        let selected =
+                            self.active_category == category && matches!(self.page, Page::Tool(_));
+                        if ui::icon_button_sized(
+                            ui,
+                            category_app_icon(category),
+                            category.label(),
+                            selected,
+                            layout::CATEGORY_ROW_HEIGHT,
+                        )
+                        .clicked()
+                        {
+                            if self.active_category == category
+                                && nav_layout == layout::NavigationLayout::Compact
+                            {
+                                self.compact_tool_nav_open = !self.compact_tool_nav_open;
+                            } else {
+                                self.active_category = category;
+                                self.compact_tool_nav_open = true;
+                            }
+                        }
+                    }
                 });
-                ui.add_space(ui::SPACE_12);
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                    ui.add_space(ui::SPACE_8);
+                    if ui::icon_button_sized(
+                        ui,
+                        ui::AppIcon::About,
+                        "关于与架构",
+                        self.page == Page::About,
+                        layout::CATEGORY_ROW_HEIGHT,
+                    )
+                    .clicked()
+                    {
+                        actions.push(AppAction::NavigateTo("about".into()));
+                    }
+                    if ui::icon_button_sized(
+                        ui,
+                        ui::AppIcon::Settings,
+                        "系统设置",
+                        self.page == Page::Settings,
+                        layout::CATEGORY_ROW_HEIGHT,
+                    )
+                    .clicked()
+                    {
+                        actions.push(AppAction::NavigateTo("settings".into()));
+                    }
+                });
+            });
 
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        if !self.search.trim().is_empty() {
-                            nav_section_label(ui, &format!("搜索结果 ({})", descriptors.len()));
-                            ui.add_space(ui::SPACE_4);
-                            if descriptors.is_empty() {
+        let show_tool_nav = nav_layout == layout::NavigationLayout::Wide
+            || self.compact_tool_nav_open
+            || !self.search.trim().is_empty();
+        if show_tool_nav {
+            egui::SidePanel::left("toolbox-tool-navigation")
+                .resizable(false)
+                .exact_width(layout::TOOL_NAV_WIDTH)
+                .frame(
+                    egui::Frame::side_top_panel(context.style().as_ref())
+                        .fill(
+                            ui::theme_palette(if context.style().visuals.dark_mode {
+                                egui::Theme::Dark
+                            } else {
+                                egui::Theme::Light
+                            })
+                            .surface,
+                        )
+                        .inner_margin(egui::Margin::symmetric(12, 12)),
+                )
+                .show(context, |ui| {
+                    ui.horizontal(|ui| {
+                        let title = if self.search.trim().is_empty() {
+                            format!("{}工具", self.active_category.label())
+                        } else {
+                            "搜索结果".to_owned()
+                        };
+                        ui.label(RichText::new(title).strong().size(15.0));
+                        if nav_layout == layout::NavigationLayout::Compact {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui::icon_button(ui, ui::AppIcon::Back, "收起工具导航", false)
+                                        .clicked()
+                                    {
+                                        self.compact_tool_nav_open = false;
+                                    }
+                                },
+                            );
+                        }
+                    });
+                    ui.add_space(ui::SPACE_8);
+                    ui.separator();
+                    ui.add_space(ui::SPACE_8);
+                    if nav_text_button(ui, "首页 / 工具工作台", self.page == Page::Home) {
+                        actions.push(AppAction::NavigateTo("home".into()));
+                    }
+                    ui.add_space(ui::SPACE_8);
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            let shown = if self.search.trim().is_empty() {
+                                self.registry.in_category(self.active_category)
+                            } else {
+                                descriptors
+                            };
+                            if shown.is_empty() {
                                 ui.label(
-                                    RichText::new("未检索到匹配工具")
-                                        .size(13.0)
+                                    RichText::new("没有匹配的工具")
+                                        .size(12.5)
                                         .color(ui.visuals().weak_text_color()),
                                 );
                             }
-                            for descriptor in descriptors {
+                            for descriptor in shown {
                                 if tool_nav_button(
                                     ui,
                                     &descriptor,
                                     self.page == Page::Tool(descriptor.id.into()),
                                 ) {
                                     actions.push(AppAction::NavigateTo(descriptor.id.into()));
+                                    self.compact_tool_nav_open = false;
                                 }
                             }
-                        } else {
-                            // 主页工作台入口
-                            let total_count = all_descriptors.len();
-                            if nav_hero_button(
-                                ui,
-                                "工具工作台",
-                                total_count,
-                                self.page == Page::Home,
-                            ) {
-                                actions.push(AppAction::NavigateTo("home".into()));
-                            }
-                            ui.add_space(ui::SPACE_8);
-
-                            // 我的收藏
-                            let favorites = navigation::favorite_descriptors(
-                                &all_descriptors,
-                                &self.settings.favorite_tools,
-                            );
-                            if !favorites.is_empty() {
-                                nav_section_label(ui, &format!("★ 我的收藏 ({})", favorites.len()));
-                                ui.add_space(ui::SPACE_4);
-                                for descriptor in favorites {
-                                    if tool_nav_button(
-                                        ui,
-                                        &descriptor,
-                                        self.page == Page::Tool(descriptor.id.into()),
-                                    ) {
-                                        actions.push(AppAction::NavigateTo(descriptor.id.into()));
-                                    }
-                                }
-                                ui.add_space(ui::SPACE_12);
-                            }
-
-                            // 分类可折叠手风琴 (Collapsible Category Accordions)
-                            nav_section_label(ui, "工具大类");
-                            ui.add_space(ui::SPACE_4);
-
-                            for category in categories {
-                                let count = category_counts.get(&category).copied().unwrap_or(0);
-                                let is_collapsed = self.collapsed_categories.contains(&category);
-
-                                // 折叠头按钮
-                                if category_accordion_header(
-                                    ui,
-                                    category.label(),
-                                    count,
-                                    !is_collapsed,
-                                ) {
-                                    if is_collapsed {
-                                        self.collapsed_categories.remove(&category);
-                                    } else {
-                                        self.collapsed_categories.insert(category);
-                                    }
-                                }
-
-                                // 展开的工具列表
-                                if !is_collapsed {
-                                    for descriptor in self.registry.in_category(category) {
-                                        if tool_nav_button(
-                                            ui,
-                                            &descriptor,
-                                            self.page == Page::Tool(descriptor.id.into()),
-                                        ) {
-                                            actions
-                                                .push(AppAction::NavigateTo(descriptor.id.into()));
-                                        }
-                                    }
-                                }
-                                ui.add_space(ui::SPACE_4);
-                            }
-                        }
-                    });
-
-                // 底部固定系统导航
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.add_space(ui::SPACE_8);
-                    ui.separator();
-                    ui.add_space(ui::SPACE_4);
-                    if nav_text_button(ui, "ℹ 关于与架构", self.page == Page::About) {
-                        actions.push(AppAction::NavigateTo("about".into()));
-                    }
-                    if nav_text_button(ui, "⚙ 系统设置", self.page == Page::Settings) {
-                        actions.push(AppAction::NavigateTo("settings".into()));
-                    }
+                        });
                 });
-            });
+        }
         actions
     }
 
@@ -472,7 +400,7 @@ impl ToolboxApp {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::central_panel(context.style().as_ref())
-                    .inner_margin(egui::Margin::symmetric(24, 16)),
+                    .inner_margin(egui::Margin::symmetric(ui::PAGE_PADDING as i8, 16)),
             )
             .show(context, |ui| {
                 egui::ScrollArea::vertical()
@@ -507,252 +435,134 @@ impl ToolboxApp {
             .inner
     }
 
-    /// 绘制现代科技工作台（Toolbox Hub）：遥测看板、分类过滤胶囊、网格/列表视图切换、工具列表。
+    /// 绘制紧凑工具工作台，突出收藏、最近使用和完整工具索引。
     fn render_home(&mut self, ui: &mut egui::Ui) -> Vec<AppAction> {
         let mut actions = Vec::new();
         let palette = ui::palette_for_ui(ui);
-        let all_descriptors = self.registry.descriptors();
-        let total_count = all_descriptors.len();
-        let fav_count = self.settings.favorite_tools.len();
-        let recent_count = self.settings.recent_tools.len();
+        let descriptors = self.registry.descriptors();
+        let favorites =
+            navigation::favorite_descriptors(&descriptors, &self.settings.favorite_tools);
 
-        // 标头
-        ui::page_heading(
-            ui,
-            "系统诊断工作台 (Toolbox Hub)",
-            "原生高性能 Windows 系统诊断、网络路径探测与进程分析套件",
-        );
+        ui::page_heading(ui, "工具工作台", "系统与网络工具集中入口");
         ui.add_space(ui::SPACE_16);
 
-        // 顶部遥测指标看板 (Telemetry Tiles)
-        let tile_width = ((ui.available_width() - ui::SPACE_12 * 3.0) / 4.0).max(140.0);
-        ui.horizontal_wrapped(|ui| {
-            ui::metric_tile(
-                ui,
-                tile_width,
-                "收录工具总数",
-                &total_count.to_string(),
-                "个内建模块",
-                palette.accent,
-            );
-            ui::metric_tile(
-                ui,
-                tile_width,
-                "我的快捷收藏",
-                &fav_count.to_string(),
-                "项已星标",
-                palette.warning_text,
-            );
-            ui::metric_tile(
-                ui,
-                tile_width,
-                "最近运行记录",
-                &recent_count.to_string(),
-                "次启动",
-                palette.accent_secondary,
-            );
-            ui::metric_tile(
-                ui,
-                tile_width,
-                "诊断引擎状态",
-                "READY",
-                "原生运行中",
-                palette.success_text,
-            );
-        });
-        ui.add_space(ui::SPACE_16);
-
-        // 分类筛选 Tab 栏与视图模式切换器
-        ui.horizontal(|ui| {
-            // 全部
-            let is_all = self.active_category_filter.is_none();
-            if category_filter_chip(ui, "全部工具", total_count, is_all, palette.accent) {
-                self.active_category_filter = None;
-            }
-
-            // 收藏
-            let is_fav_selected = self.active_category_filter == Some(None);
-            if category_filter_chip(
-                ui,
-                "★ 收藏",
-                fav_count,
-                is_fav_selected,
-                palette.warning_text,
-            ) {
-                self.active_category_filter = Some(None);
-            }
-
-            // 各个分类
-            for category in self.registry.categories() {
-                let count = all_descriptors
-                    .iter()
-                    .filter(|d| d.category == category)
-                    .count();
-                let is_selected = self.active_category_filter == Some(Some(category));
-                if category_filter_chip(
-                    ui,
-                    category.label(),
-                    count,
-                    is_selected,
-                    palette.accent_secondary,
-                ) {
-                    self.active_category_filter = Some(Some(category));
-                }
-            }
-
-            // 右侧视图模式切换 (网格卡片 / 紧凑列表)
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui::small_action_button(
-                    ui,
-                    match self.home_view_mode {
-                        HomeViewMode::Grid => "≡ 切换紧凑列表",
-                        HomeViewMode::List => "田 切换网格卡片",
-                    },
-                )
-                .on_hover_text("切换网格卡片或紧凑列表视图")
-                .clicked()
-                {
-                    self.home_view_mode = match self.home_view_mode {
-                        HomeViewMode::Grid => HomeViewMode::List,
-                        HomeViewMode::List => HomeViewMode::Grid,
-                    };
-                }
+        egui::Frame::new()
+            .fill(palette.surface)
+            .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
+            .corner_radius(egui::CornerRadius::same(6))
+            .inner_margin(egui::Margin::symmetric(16, 12))
+            .show(ui, |ui| {
+                ui.columns(3, |columns| {
+                    home_summary_item(
+                        &mut columns[0],
+                        "内建工具",
+                        descriptors.len(),
+                        palette.accent,
+                    );
+                    home_summary_item(
+                        &mut columns[1],
+                        "收藏",
+                        favorites.len(),
+                        palette.warning_text,
+                    );
+                    home_summary_item(
+                        &mut columns[2],
+                        "最近使用",
+                        self.settings.recent_tools.len(),
+                        palette.success_text,
+                    );
+                });
             });
-        });
-        ui.add_space(ui::SPACE_12);
 
-        // 过滤后的工具列表
-        let filtered_descriptors: Vec<ToolDescriptor> = all_descriptors
-            .into_iter()
-            .filter(|desc| match self.active_category_filter {
-                None => true,
-                Some(None) => self.settings.favorite_tools.iter().any(|id| id == desc.id),
-                Some(Some(cat)) => desc.category == cat,
-            })
-            .collect();
-
-        if filtered_descriptors.is_empty() {
-            ui.add_space(ui::SPACE_16);
-            ui::state_card(
-                ui,
-                "当前分类下暂无工具",
-                "请选择其他分类，或点击卡片右上角星标将常用工具加入收藏。",
-                palette.weak,
-            );
+        ui.add_space(ui::SPACE_16);
+        ui.label(RichText::new("收藏工具").strong().size(14.5));
+        ui.add_space(ui::SPACE_8);
+        if favorites.is_empty() {
+            ui.label(RichText::new("尚未收藏工具").size(12.5).color(palette.weak));
         } else {
-            match self.home_view_mode {
-                HomeViewMode::Grid => {
-                    if layout::use_detail_split(ui.available_width()) {
-                        ui.columns(2, |columns| {
-                            for (index, descriptor) in filtered_descriptors.iter().enumerate() {
-                                let (open, favorite) = home_tool_card(
-                                    &mut columns[index % 2],
-                                    descriptor,
-                                    self.settings
-                                        .favorite_tools
-                                        .iter()
-                                        .any(|id| id == descriptor.id),
-                                );
-                                if open {
-                                    actions.push(AppAction::NavigateTo(descriptor.id.into()));
-                                }
-                                if favorite {
-                                    actions.push(AppAction::ToggleFavorite {
-                                        tool_id: descriptor.id.into(),
-                                    });
-                                }
-                            }
-                        });
-                    } else {
-                        for descriptor in &filtered_descriptors {
-                            let (open, favorite) = home_tool_card(
-                                ui,
-                                descriptor,
-                                self.settings
-                                    .favorite_tools
-                                    .iter()
-                                    .any(|id| id == descriptor.id),
-                            );
-                            if open {
-                                actions.push(AppAction::NavigateTo(descriptor.id.into()));
-                            }
-                            if favorite {
-                                actions.push(AppAction::ToggleFavorite {
-                                    tool_id: descriptor.id.into(),
-                                });
-                            }
-                            ui.add_space(ui::SPACE_12);
+            egui::Frame::new()
+                .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
+                .corner_radius(egui::CornerRadius::same(6))
+                .inner_margin(egui::Margin::same(4))
+                .show(ui, |ui| {
+                    for (index, descriptor) in favorites.iter().enumerate() {
+                        let (open, favorite) = home_tool_row(ui, descriptor, true, index % 2 == 1);
+                        if open {
+                            actions.push(AppAction::NavigateTo(descriptor.id.into()));
+                        }
+                        if favorite {
+                            actions.push(AppAction::ToggleFavorite {
+                                tool_id: descriptor.id.into(),
+                            });
                         }
                     }
-                }
-                HomeViewMode::List => {
-                    ui::card(ui, |ui| {
-                        for (index, descriptor) in filtered_descriptors.iter().enumerate() {
-                            let is_fav = self
-                                .settings
-                                .favorite_tools
-                                .iter()
-                                .any(|id| id == descriptor.id);
-                            let (open, fav) = home_tool_row(ui, descriptor, is_fav, index % 2 == 1);
-                            if open {
-                                actions.push(AppAction::NavigateTo(descriptor.id.into()));
-                            }
-                            if fav {
-                                actions.push(AppAction::ToggleFavorite {
-                                    tool_id: descriptor.id.into(),
-                                });
-                            }
-                            if index + 1 < filtered_descriptors.len() {
-                                ui.add_space(2.0);
-                            }
-                        }
-                    });
-                }
-            }
+                });
         }
 
-        // 最近使用工具栏
-        ui.add_space(ui::SPACE_24);
+        ui.add_space(ui::SPACE_16);
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("⏱ 最近运行")
-                    .strong()
-                    .size(14.5)
-                    .color(palette.text),
-            );
+            ui.label(RichText::new("最近使用").strong().size(14.5));
             if !self.settings.recent_tools.is_empty()
-                && ui::small_action_button(ui, "清空记录").clicked()
+                && ui::icon_button(ui, ui::AppIcon::Clear, "清空最近使用", false).clicked()
             {
                 actions.push(AppAction::ClearRecents);
             }
         });
         ui.add_space(ui::SPACE_8);
-
         if self.settings.recent_tools.is_empty() {
             ui.label(
-                RichText::new("最近打开的工具会显示在这里，方便快速二次进入。")
-                    .size(13.0)
-                    .color(ui.visuals().weak_text_color()),
+                RichText::new("打开过的工具会显示在这里")
+                    .size(12.5)
+                    .color(palette.weak),
             );
         } else {
-            let descriptors = self.registry.descriptors();
             ui.horizontal_wrapped(|ui| {
                 for id in &self.settings.recent_tools {
-                    if let Some(descriptor) = descriptors.iter().find(|d| d.id == id) {
-                        let btn = egui::Button::new(
-                            RichText::new(descriptor.name)
-                                .size(12.5)
-                                .color(palette.accent),
-                        )
-                        .fill(palette.secondary_button_bg)
-                        .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
-                        .corner_radius(egui::CornerRadius::same(6));
-                        if ui.add(btn).clicked() {
-                            actions.push(AppAction::NavigateTo(descriptor.id.into()));
-                        }
+                    if let Some(descriptor) = descriptors.iter().find(|item| item.id == id)
+                        && ui::secondary_button(ui, descriptor.name).clicked()
+                    {
+                        actions.push(AppAction::NavigateTo(descriptor.id.into()));
                     }
                 }
             });
+        }
+
+        ui.add_space(ui::SPACE_20);
+        ui.label(RichText::new("全部工具").strong().size(14.5));
+        ui.add_space(ui::SPACE_8);
+        for category in self.registry.categories() {
+            let category_tools = self.registry.in_category(category);
+            ui.label(
+                RichText::new(category.label())
+                    .size(12.0)
+                    .strong()
+                    .color(palette.weak),
+            );
+            ui.add_space(ui::SPACE_4);
+            egui::Frame::new()
+                .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
+                .corner_radius(egui::CornerRadius::same(6))
+                .inner_margin(egui::Margin::same(4))
+                .show(ui, |ui| {
+                    for (index, descriptor) in category_tools.iter().enumerate() {
+                        let is_favorite = self
+                            .settings
+                            .favorite_tools
+                            .iter()
+                            .any(|id| id == descriptor.id);
+                        let (open, favorite) =
+                            home_tool_row(ui, descriptor, is_favorite, index % 2 == 1);
+                        if open {
+                            actions.push(AppAction::NavigateTo(descriptor.id.into()));
+                        }
+                        if favorite {
+                            actions.push(AppAction::ToggleFavorite {
+                                tool_id: descriptor.id.into(),
+                            });
+                        }
+                    }
+                });
+            ui.add_space(ui::SPACE_12);
         }
 
         actions
@@ -761,75 +571,52 @@ impl ToolboxApp {
     fn render_settings(&mut self, ui: &mut egui::Ui) -> Vec<AppAction> {
         let mut actions = Vec::new();
         let palette = ui::palette_for_ui(ui);
-        ui::page_heading(
-            ui,
-            "系统设置",
-            "应用配置保存在当前 Windows 用户的本地目录。",
-        );
-        ui.add_space(ui::SPACE_20);
+        ui::page_heading(ui, "系统设置", "外观、系统集成与本地诊断存储");
+        ui.add_space(ui::SPACE_16);
 
-        ui::tech_card(ui, palette.accent, |ui| {
-            ui.label(
-                RichText::new("界面视觉风格与主题")
-                    .strong()
-                    .size(15.0)
-                    .color(palette.text),
-            );
-            ui.add_space(2.0);
-            ui.label(
-                RichText::new("支持深空黑曜石赛博科技模式与明亮实验室工程模式。")
-                    .size(13.0)
-                    .color(palette.weak),
-            );
-            ui.add_space(ui::SPACE_8);
+        ui::section(ui, |ui| {
+            ui.label(RichText::new("外观").strong().size(15.0));
+            ui.add_space(ui::SPACE_12);
             let before_theme = self.settings.theme;
-            egui::ComboBox::from_id_salt("theme-preference")
-                .selected_text(self.settings.theme.label())
-                .show_ui(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label("主题模式");
+                    ui.label(
+                        RichText::new("选择应用的明暗外观")
+                            .size(12.0)
+                            .color(palette.weak),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.selectable_value(&mut self.settings.theme, ThemePreference::Dark, "深色");
+                    ui.selectable_value(&mut self.settings.theme, ThemePreference::Light, "浅色");
                     ui.selectable_value(
                         &mut self.settings.theme,
                         ThemePreference::System,
                         "跟随系统",
                     );
-                    ui.selectable_value(
-                        &mut self.settings.theme,
-                        ThemePreference::Light,
-                        "极简浅色 (Light)",
-                    );
-                    ui.selectable_value(
-                        &mut self.settings.theme,
-                        ThemePreference::Dark,
-                        "赛博黑曜石 (Dark)",
-                    );
                 });
+            });
             if before_theme != self.settings.theme {
                 apply_theme(ui.ctx(), self.settings.theme);
                 self.persist_settings();
             }
         });
 
-        ui.add_space(ui::SPACE_16);
-        ui::tech_card(ui, palette.accent_secondary, |ui| {
+        ui::section(ui, |ui| {
+            ui.label(RichText::new("资源管理器集成").strong().size(15.0));
+            ui.add_space(ui::SPACE_12);
             ui.label(
-                RichText::new("Windows 资源管理器右键集成")
-                    .strong()
-                    .size(15.0)
-                    .color(palette.text),
-            );
-            ui.add_space(2.0);
-            ui.label(
-                RichText::new(
-                    "在 Windows 文件右键菜单中注册“Windows Toolbox -> 查看文件占用”快捷入口。",
-                )
-                .size(13.0)
-                .color(palette.weak),
+                RichText::new("在文件右键菜单中显示 ToolDeck 文件占用入口")
+                    .size(12.5)
+                    .color(palette.weak),
             );
             ui.add_space(ui::SPACE_8);
             let registered = shell_context_menu::is_context_menu_registered();
             ui.horizontal(|ui| {
                 let mut enabled = registered;
                 if ui
-                    .checkbox(&mut enabled, "启用 Windows Toolbox 右键菜单")
+                    .checkbox(&mut enabled, "启用资源管理器右键菜单")
                     .changed()
                 {
                     actions.push(AppAction::ToggleContextMenu { enabled });
@@ -847,7 +634,7 @@ impl ToolboxApp {
             });
             ui.add_space(ui::SPACE_8);
             ui.horizontal(|ui| {
-                if ui::primary_button(ui, "重新注册").clicked() {
+                if ui::secondary_button(ui, "重新注册").clicked() {
                     actions.push(AppAction::ToggleContextMenu { enabled: true });
                 }
                 if registered && ui::secondary_button(ui, "移除菜单").clicked() {
@@ -856,27 +643,30 @@ impl ToolboxApp {
             });
         });
 
-        ui.add_space(ui::SPACE_16);
-        ui::tech_card(ui, palette.weak, |ui| {
+        ui::section(ui, |ui| {
+            ui.label(RichText::new("诊断与存储").strong().size(15.0));
+            ui.add_space(ui::SPACE_12);
             ui.label(
-                RichText::new("诊断日志与本地存储")
-                    .strong()
-                    .size(15.0)
-                    .color(palette.text),
-            );
-            ui.add_space(2.0);
-            ui.label(
-                RichText::new("运行诊断与崩溃守护日志保存在本地配置目录，自动轮转最多保留三份。")
-                    .size(13.0)
+                RichText::new("诊断与崩溃日志保存在本地目录，自动轮转并保留最近三份")
+                    .size(12.5)
                     .color(palette.weak),
             );
             ui.add_space(ui::SPACE_8);
             let directory = crate::diagnostics::diagnostic_directory();
-            if directory.is_some()
-                && ui::secondary_button(ui, "打开诊断日志目录").clicked()
-                && let Some(directory) = directory
-            {
-                actions.push(AppAction::OpenDirectory(directory));
+            if let Some(directory) = directory {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(directory.display().to_string())
+                            .monospace()
+                            .size(12.0)
+                            .color(palette.text),
+                    );
+                    if ui::secondary_button(ui, "打开目录").clicked() {
+                        actions.push(AppAction::OpenDirectory(directory));
+                    }
+                });
+            } else {
+                ui.label(RichText::new("诊断目录尚未建立").color(palette.weak));
             }
         });
         actions
@@ -884,43 +674,82 @@ impl ToolboxApp {
 
     fn render_about(&self, ui: &mut egui::Ui) -> Vec<AppAction> {
         let palette = ui::palette_for_ui(ui);
-        ui::page_heading(
-            ui,
-            "关于 Windows Toolbox",
-            concat!(
-                "V",
-                env!("CARGO_PKG_VERSION"),
-                " · 原生高性能 Windows 系统诊断与工具集"
-            ),
-        );
-        ui.add_space(ui::SPACE_20);
-        ui::tech_card(ui, palette.accent, |ui| {
-            ui.label("Windows Toolbox 基于 Rust 和 egui 原生开发，提供无冗余依赖、零运行时、低开销的系统级诊断与网络分析能力。");
-            ui.add_space(ui::SPACE_16);
-            ui.label(
-                RichText::new("已收录内建诊断模块")
-                    .strong()
-                    .size(15.0)
-                    .color(palette.text),
-            );
+        ui::page_heading(ui, "关于与架构", "ToolDeck Windows 系统与网络工具工作台");
+        ui.add_space(ui::SPACE_16);
+
+        ui::section(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("ToolDeck").strong().size(24.0));
+                ui::badge(
+                    ui,
+                    concat!("v", env!("CARGO_PKG_VERSION")),
+                    palette.accent,
+                    palette.accent.gamma_multiply(0.12),
+                );
+            });
             ui.add_space(ui::SPACE_8);
-            ui.label("• 文件占用 · 通过 Windows Restart Manager 查找锁定文件的进程");
-            ui.label("• 端口占用 · 通过 Windows IP Helper API 实时列出 TCP / UDP 监听与连接");
-            ui.label("• 进程关系 · 通过 Toolhelp 快照解析完整父进程链与子进程详情");
-            ui.label("• DNS 查询 · 原生解析 A / AAAA / CNAME / MX / TXT / NS / PTR 记录");
-            ui.label("• Ping 测试 · 真实 ICMP 往返延迟与丢包率测试");
-            ui.label("• TCP 端口测试 · 无侵入式 TCP 三次握手连通性与时延测试");
-            ui.label("• MTR 路径诊断 · 原生 ICMP 逐跳观察路由、延迟和丢包");
-            ui.label("• TCP 调试 · 客户端与多客户端服务端持续收发原始字节流");
-            ui.label("• UDP 调试 · 单播、IPv4 广播、IPv4 组播与来源回复");
-            ui.label("• 串口调试 · COM 口配置、持续收发与设备断开状态记录");
-            ui.add_space(ui::SPACE_16);
+            ui.columns(2, |columns| {
+                about_value(&mut columns[0], "运行平台", "Windows 原生应用", palette);
+                about_value(&mut columns[0], "界面框架", "Rust + egui", palette);
+                about_value(
+                    &mut columns[1],
+                    "软件许可",
+                    env!("CARGO_PKG_LICENSE"),
+                    palette,
+                );
+                about_value(&mut columns[1], "目标架构", std::env::consts::ARCH, palette);
+            });
+        });
+
+        ui::section(ui, |ui| {
+            ui.label(RichText::new("架构边界").strong().size(15.0));
+            ui.add_space(ui::SPACE_12);
+            ui.columns(5, |columns| {
+                architecture_node(&mut columns[0], "UI", "展示与输入", palette);
+                architecture_node(&mut columns[1], "App Actions", "命令与状态", palette);
+                architecture_node(&mut columns[2], "Worker", "短任务", palette);
+                architecture_node(&mut columns[3], "Communication", "持久会话", palette);
+                architecture_node(&mut columns[4], "Windows APIs", "系统接口", palette);
+            });
+            ui.add_space(ui::SPACE_12);
             ui.label(
-                RichText::new("提示：默认以当前用户权限运行；查询受保护的系统进程或核心服务可能需要以管理员身份运行。")
-                    .size(12.5)
-                    .color(palette.weak),
+                RichText::new(
+                    "UI 不执行耗时操作；Worker 处理受限短任务；Communication Dispatcher 管理持续通信会话。",
+                )
+                .size(12.5)
+                .color(palette.weak),
             );
         });
+
+        ui.label(RichText::new("能力清单").strong().size(15.0));
+        ui.add_space(ui::SPACE_12);
+        ui.columns(2, |columns| {
+            for (index, category) in self.registry.categories().iter().enumerate() {
+                let column = &mut columns[index % 2];
+                column.label(
+                    RichText::new(category.label())
+                        .strong()
+                        .size(13.0)
+                        .color(palette.accent),
+                );
+                for descriptor in self.registry.in_category(*category) {
+                    column.label(
+                        RichText::new(format!("{}  {}", descriptor.name, descriptor.description))
+                            .size(12.0)
+                            .color(palette.text),
+                    );
+                }
+                column.add_space(ui::SPACE_12);
+            }
+        });
+        ui.add_space(ui::SPACE_16);
+        ui.label(
+            RichText::new(
+                "ToolDeck 默认使用当前用户权限；访问受保护的系统资源时由对应操作返回明确错误。",
+            )
+            .size(12.0)
+            .color(palette.weak),
+        );
         Vec::new()
     }
 
@@ -1050,6 +879,9 @@ impl ToolboxApp {
             "settings" => Page::Settings,
             "about" => Page::About,
             tool_id if self.registry.get(tool_id).is_some() => {
+                if let Some(descriptor) = self.registry.get(tool_id).map(|tool| tool.descriptor()) {
+                    self.active_category = descriptor.category;
+                }
                 self.record_recent_tool(tool_id);
                 Page::Tool(tool_id.to_owned())
             }
@@ -1327,177 +1159,62 @@ pub fn native_options(settings: &AppSettings, persistence_path: PathBuf) -> efra
     }
 }
 
-fn nav_section_label(ui: &mut egui::Ui, label: &str) {
-    ui.label(
-        RichText::new(label)
-            .size(11.5)
-            .strong()
-            .color(ui.visuals().weak_text_color()),
-    );
+fn home_summary_item(ui: &mut egui::Ui, label: &str, value: usize, color: Color32) {
+    ui.vertical_centered(|ui| {
+        ui.label(
+            RichText::new(value.to_string())
+                .strong()
+                .size(19.0)
+                .color(color),
+        );
+        ui.label(
+            RichText::new(label)
+                .size(12.0)
+                .color(ui.visuals().weak_text_color()),
+        );
+    });
 }
 
-/// 侧边栏主工作台大按钮（带工具数量徽章）。
-fn nav_hero_button(ui: &mut egui::Ui, label: &str, count: usize, selected: bool) -> bool {
-    let available = ui.available_width();
-    let (response, painter) =
-        ui.allocate_painter(egui::vec2(available, 38.0), egui::Sense::click());
-    let palette = ui::palette_for_ui(ui);
-    let fill = if selected {
-        palette
-            .accent
-            .gamma_multiply(if ui.visuals().dark_mode { 0.20 } else { 0.12 })
-    } else if response.hovered() {
-        palette.hover
-    } else {
-        Color32::TRANSPARENT
-    };
-    painter.rect(
-        response.rect,
-        egui::CornerRadius::same(6),
-        fill,
-        if selected {
-            egui::Stroke::new(1.0_f32, palette.accent.gamma_multiply(0.40))
-        } else {
-            egui::Stroke::NONE
-        },
-        egui::StrokeKind::Middle,
-    );
-    if selected {
-        painter.rect_filled(
-            egui::Rect::from_min_size(
-                response.rect.left_top() + egui::vec2(0.0, 5.0),
-                egui::vec2(3.5, response.rect.height() - 10.0),
-            ),
-            egui::CornerRadius::same(2),
-            palette.accent,
-        );
-    }
-    let text_color = if selected {
-        palette.accent
-    } else {
-        palette.text
-    };
-    painter.text(
-        response.rect.left_center() + egui::vec2(12.0, 0.0),
-        egui::Align2::LEFT_CENTER,
-        label,
-        egui::FontId::proportional(14.0),
-        text_color,
-    );
-
-    // 右侧数量胶囊
-    let count_text = count.to_string();
-    let count_font = egui::FontId::monospace(11.0);
-    let count_galley = painter.layout_no_wrap(count_text, count_font, palette.weak);
-    let badge_rect = egui::Rect::from_center_size(
-        response.rect.right_center() - egui::vec2(20.0, 0.0),
-        egui::vec2(count_galley.size().x + 12.0, 18.0),
-    );
-    painter.rect_filled(
-        badge_rect,
-        egui::CornerRadius::same(9),
-        palette.border_subtle,
-    );
-    painter.galley(
-        badge_rect.left_center() + egui::vec2(6.0, -count_galley.size().y * 0.5),
-        count_galley,
-        palette.weak,
-    );
-
-    if response.clicked() {
-        response.request_focus();
-    }
-    response.clicked()
-        || (response.has_focus()
-            && ui.input(|input| {
-                input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
-            }))
+fn about_value(ui: &mut egui::Ui, label: &str, value: &str, palette: ui::ThemePalette) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).size(12.0).color(palette.weak));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(RichText::new(value).size(12.5).color(palette.text));
+        });
+    });
 }
 
-/// 侧边栏分类折叠手风琴头按钮。
-fn category_accordion_header(ui: &mut egui::Ui, label: &str, count: usize, expanded: bool) -> bool {
-    let available = ui.available_width();
-    let (response, painter) =
-        ui.allocate_painter(egui::vec2(available, 30.0), egui::Sense::click());
-    let palette = ui::palette_for_ui(ui);
-    let fill = if response.hovered() {
-        palette.hover
-    } else {
-        Color32::TRANSPARENT
-    };
-    painter.rect_filled(response.rect, egui::CornerRadius::same(4), fill);
+fn architecture_node(ui: &mut egui::Ui, title: &str, detail: &str, palette: ui::ThemePalette) {
+    egui::Frame::new()
+        .fill(palette.surface)
+        .stroke(egui::Stroke::new(1.0_f32, palette.border))
+        .corner_radius(egui::CornerRadius::same(5))
+        .inner_margin(egui::Margin::symmetric(8, 10))
+        .show(ui, |ui| {
+            ui.set_min_height(52.0);
+            ui.vertical_centered(|ui| {
+                ui.label(RichText::new(title).strong().size(12.5));
+                ui.label(RichText::new(detail).size(11.0).color(palette.weak));
+            });
+        });
+}
 
-    // 矢量绘制现代折叠箭头（保证在任何系统上绝对不会显示为方块）
-    let arrow_center = response.rect.left_center() + egui::vec2(12.0, 0.0);
-    if expanded {
-        // 向下箭头 ▾
-        painter.line_segment(
-            [
-                arrow_center + egui::vec2(-4.0, -2.0),
-                arrow_center + egui::vec2(0.0, 2.5),
-            ],
-            egui::Stroke::new(1.6_f32, palette.weak),
-        );
-        painter.line_segment(
-            [
-                arrow_center + egui::vec2(0.0, 2.5),
-                arrow_center + egui::vec2(4.0, -2.0),
-            ],
-            egui::Stroke::new(1.6_f32, palette.weak),
-        );
-    } else {
-        // 向右箭头 ▸
-        painter.line_segment(
-            [
-                arrow_center + egui::vec2(-2.0, -4.0),
-                arrow_center + egui::vec2(2.5, 0.0),
-            ],
-            egui::Stroke::new(1.6_f32, palette.weak),
-        );
-        painter.line_segment(
-            [
-                arrow_center + egui::vec2(2.5, 0.0),
-                arrow_center + egui::vec2(-2.0, 4.0),
-            ],
-            egui::Stroke::new(1.6_f32, palette.weak),
-        );
+fn category_app_icon(category: ToolCategory) -> ui::AppIcon {
+    match category {
+        ToolCategory::File => ui::AppIcon::File,
+        ToolCategory::Network => ui::AppIcon::Network,
+        ToolCategory::System => ui::AppIcon::System,
+        ToolCategory::Developer => ui::AppIcon::Developer,
+        ToolCategory::Text | ToolCategory::Security | ToolCategory::Other => ui::AppIcon::File,
     }
-
-    // 分类名
-    painter.text(
-        response.rect.left_center() + egui::vec2(24.0, 0.0),
-        egui::Align2::LEFT_CENTER,
-        label,
-        egui::FontId::proportional(13.0),
-        palette.text,
-    );
-
-    // 计数徽章
-    let count_text = count.to_string();
-    let count_font = egui::FontId::monospace(10.5);
-    let count_galley = painter.layout_no_wrap(count_text, count_font, palette.weak);
-    let badge_rect = egui::Rect::from_center_size(
-        response.rect.right_center() - egui::vec2(16.0, 0.0),
-        egui::vec2(count_galley.size().x + 10.0, 16.0),
-    );
-    painter.rect_filled(
-        badge_rect,
-        egui::CornerRadius::same(8),
-        palette.border_subtle,
-    );
-    painter.galley(
-        badge_rect.left_center() + egui::vec2(5.0, -count_galley.size().y * 0.5),
-        count_galley,
-        palette.weak,
-    );
-
-    response.clicked()
 }
 
 fn nav_text_button(ui: &mut egui::Ui, label: &str, selected: bool) -> bool {
     let available = ui.available_width();
-    let (response, painter) =
-        ui.allocate_painter(egui::vec2(available, 34.0), egui::Sense::click());
+    let (response, painter) = ui.allocate_painter(
+        egui::vec2(available, layout::TOOL_ROW_HEIGHT),
+        egui::Sense::click(),
+    );
     let palette = ui::palette_for_ui(ui);
     let fill = if selected {
         palette
@@ -1532,11 +1249,14 @@ fn nav_text_button(ui: &mut egui::Ui, label: &str, selected: bool) -> bool {
     } else {
         palette.text
     };
-    painter.text(
-        response.rect.left_center() + egui::vec2(12.0, 0.0),
-        egui::Align2::LEFT_CENTER,
-        label,
+    let galley = painter.layout_no_wrap(
+        label.to_owned(),
         egui::FontId::proportional(13.5),
+        text_color,
+    );
+    painter.galley(
+        response.rect.left_center() + egui::vec2(12.0, -galley.size().y * 0.5),
+        galley,
         text_color,
     );
     if response.clicked() {
@@ -1551,8 +1271,10 @@ fn nav_text_button(ui: &mut egui::Ui, label: &str, selected: bool) -> bool {
 
 fn tool_nav_button(ui: &mut egui::Ui, descriptor: &ToolDescriptor, selected: bool) -> bool {
     let available = ui.available_width();
-    let (response, painter) =
-        ui.allocate_painter(egui::vec2(available, 36.0), egui::Sense::click());
+    let (response, painter) = ui.allocate_painter(
+        egui::vec2(available, layout::TOOL_ROW_HEIGHT),
+        egui::Sense::click(),
+    );
     let palette = ui::palette_for_ui(ui);
     let fill = if selected {
         palette
@@ -1611,11 +1333,14 @@ fn tool_nav_button(ui: &mut egui::Ui, descriptor: &ToolDescriptor, selected: boo
     } else {
         palette.text
     };
-    painter.text(
-        response.rect.left_center() + egui::vec2(40.0, 0.0),
-        egui::Align2::LEFT_CENTER,
-        descriptor.name,
+    let galley = painter.layout_no_wrap(
+        descriptor.name.to_owned(),
         egui::FontId::proportional(13.5),
+        text_color,
+    );
+    painter.galley(
+        response.rect.left_center() + egui::vec2(40.0, -galley.size().y * 0.5),
+        galley,
         text_color,
     );
     if response.clicked() {
@@ -1626,219 +1351,6 @@ fn tool_nav_button(ui: &mut egui::Ui, descriptor: &ToolDescriptor, selected: boo
             && ui.input(|input| {
                 input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
             }))
-}
-
-/// 分类过滤胶囊按钮。
-fn category_filter_chip(
-    ui: &mut egui::Ui,
-    label: &str,
-    count: usize,
-    selected: bool,
-    active_color: Color32,
-) -> bool {
-    let text = format!("{label} ({count})");
-    let font_id = egui::FontId::proportional(12.5);
-    let palette = ui::palette_for_ui(ui);
-    let text_color = if selected { active_color } else { palette.weak };
-    let galley = ui.painter().layout_no_wrap(text, font_id, text_color);
-    let size = Vec2::new(galley.size().x + 20.0, 28.0);
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    let painter = ui.painter();
-
-    let bg = if selected {
-        active_color.gamma_multiply(if ui.visuals().dark_mode { 0.18 } else { 0.12 })
-    } else if response.hovered() {
-        palette.hover
-    } else {
-        palette.secondary_button_bg
-    };
-
-    let stroke = if selected {
-        egui::Stroke::new(1.2_f32, active_color)
-    } else {
-        egui::Stroke::new(1.0_f32, palette.border_subtle)
-    };
-
-    painter.rect(
-        rect,
-        egui::CornerRadius::same(14),
-        bg,
-        stroke,
-        egui::StrokeKind::Middle,
-    );
-    painter.galley(
-        rect.left_center() + Vec2::new(10.0, -galley.size().y * 0.5),
-        galley,
-        text_color,
-    );
-
-    response.clicked()
-}
-
-/// 首页科技感工具卡片（网格视图）。
-fn home_tool_card(ui: &mut egui::Ui, descriptor: &ToolDescriptor, favorite: bool) -> (bool, bool) {
-    let width = ui.available_width().min(520.0);
-    let (response, painter) = ui.allocate_painter(egui::vec2(width, 126.0), egui::Sense::click());
-    let painter = painter.with_clip_rect(response.rect);
-    let palette = ui::palette_for_ui(ui);
-
-    let fill = if response.hovered() {
-        palette.hover
-    } else {
-        palette.surface
-    };
-    let stroke = if response.hovered() {
-        egui::Stroke::new(1.2_f32, palette.accent)
-    } else {
-        egui::Stroke::new(1.0_f32, palette.border)
-    };
-    painter.rect(
-        response.rect,
-        egui::CornerRadius::same(8),
-        fill,
-        stroke,
-        egui::StrokeKind::Middle,
-    );
-
-    // 顶部微妙科技霓虹条
-    let top_neon = egui::Rect::from_min_size(
-        response.rect.left_top() + egui::vec2(8.0, 0.0),
-        egui::vec2(response.rect.width() - 16.0, 2.0),
-    );
-    if response.hovered() {
-        painter.rect_filled(top_neon, egui::CornerRadius::same(1), palette.accent);
-    } else {
-        painter.rect_filled(top_neon, egui::CornerRadius::same(1), palette.border_subtle);
-    }
-
-    if response.has_focus() {
-        painter.rect_stroke(
-            response.rect.shrink(1.0),
-            egui::CornerRadius::same(8),
-            egui::Stroke::new(2.0_f32, palette.accent),
-            egui::StrokeKind::Middle,
-        );
-    }
-    let content = response.rect.shrink(16.0);
-
-    // 图标容器底色
-    let icon_bg_rect = egui::Rect::from_min_size(content.left_top(), egui::vec2(40.0, 40.0));
-    let icon_bg = palette
-        .accent
-        .gamma_multiply(if ui.visuals().dark_mode { 0.20 } else { 0.12 });
-    painter.rect(
-        icon_bg_rect,
-        egui::CornerRadius::same(8),
-        icon_bg,
-        egui::Stroke::new(1.0_f32, palette.accent.gamma_multiply(0.30)),
-        egui::StrokeKind::Middle,
-    );
-    ui::paint_tool_icon(&painter, icon_bg_rect, descriptor.icon, palette.accent);
-
-    // 标题
-    painter.text(
-        content.left_top() + egui::vec2(52.0, 2.0),
-        egui::Align2::LEFT_TOP,
-        descriptor.name,
-        egui::FontId::proportional(16.0),
-        palette.text,
-    );
-
-    // 分类标签
-    let category_tag = descriptor.category.label();
-    let cat_bg = palette.border_subtle;
-    let name_len = descriptor.name.chars().count() as f32;
-    let cat_rect = egui::Rect::from_min_size(
-        content.left_top() + egui::vec2(52.0 + name_len * 16.0 + 8.0, 3.0),
-        egui::vec2(38.0, 18.0),
-    );
-    painter.rect_filled(cat_rect, egui::CornerRadius::same(4), cat_bg);
-    painter.text(
-        cat_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        category_tag,
-        egui::FontId::proportional(11.0),
-        palette.weak,
-    );
-
-    // 收藏按钮
-    let favorite_rect = egui::Rect::from_min_size(
-        response.rect.right_top() - egui::vec2(36.0, -10.0),
-        egui::vec2(26.0, 26.0),
-    );
-    let favorite_response = ui.interact(
-        favorite_rect,
-        ui.id().with(("favorite", descriptor.id)),
-        egui::Sense::click(),
-    );
-    favorite_response.clone().on_hover_text(if favorite {
-        "取消收藏"
-    } else {
-        "加入收藏"
-    });
-    if favorite_response.has_focus() {
-        painter.rect_stroke(
-            favorite_rect.shrink(1.0),
-            egui::CornerRadius::same(6),
-            egui::Stroke::new(2.0_f32, palette.accent),
-            egui::StrokeKind::Middle,
-        );
-    }
-    let star_color = if favorite {
-        palette.warning_text
-    } else if favorite_response.hovered() {
-        palette.accent
-    } else {
-        palette.weak
-    };
-    painter.text(
-        favorite_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        if favorite { "★" } else { "☆" },
-        egui::FontId::proportional(18.0),
-        star_color,
-    );
-
-    // 描述
-    painter.text(
-        content.left_top() + egui::vec2(52.0, 32.0),
-        egui::Align2::LEFT_TOP,
-        descriptor.description,
-        egui::FontId::proportional(13.0),
-        palette.weak,
-    );
-
-    // 底部操作链接
-    let action_color = if response.hovered() {
-        palette.accent
-    } else {
-        palette.weak
-    };
-    painter.text(
-        content.right_bottom(),
-        egui::Align2::RIGHT_BOTTOM,
-        "进入工具 →",
-        egui::FontId::proportional(12.5),
-        action_color,
-    );
-
-    if response.clicked() {
-        response.request_focus();
-    }
-    let open = response.clicked()
-        || (response.has_focus()
-            && ui.input(|input| {
-                input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
-            }));
-    if favorite_response.clicked() {
-        favorite_response.request_focus();
-    }
-    let toggle_favorite = favorite_response.clicked()
-        || (favorite_response.has_focus()
-            && ui.input(|input| {
-                input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
-            }));
-    (open && !toggle_favorite, toggle_favorite)
 }
 
 /// 首页紧凑列表视图单行（专为海量工具设计的高密度扫描列表）。
@@ -1919,11 +1431,10 @@ fn home_tool_row(
     } else {
         palette.weak
     };
-    painter.text(
-        fav_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        if favorite { "★" } else { "☆" },
-        egui::FontId::proportional(16.0),
+    ui::paint_app_icon(
+        &painter,
+        fav_rect.shrink(5.0),
+        ui::AppIcon::Star,
         star_color,
     );
 

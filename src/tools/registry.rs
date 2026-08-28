@@ -319,4 +319,15 @@ mod tests {
             ToolIcon::SerialDebug
         );
     }
+
+    #[test]
+    fn navigation_labels_do_not_embed_symbol_glyphs() {
+        let forbidden = ['★', '☆', '⚙', 'ℹ', '🔍', '✓', '⚠'];
+        for category in ToolCategory::ALL {
+            assert!(!category.label().contains(forbidden));
+        }
+        for descriptor in build_registry().descriptors() {
+            assert!(!descriptor.name.contains(forbidden));
+        }
+    }
 }

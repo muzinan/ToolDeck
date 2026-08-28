@@ -77,19 +77,19 @@ impl ToolModule for ProcessInspectorTool {
             self.tree_refresh_pending = true;
             actions.push(AppAction::LoadProcessTree);
         }
-        heading(
-            ui,
-            "进程关系与拓扑分析",
-            "基于 Windows Toolhelp 快照解析完整进程树、父子进程链与启动命令行参数。",
-        );
+        heading(ui, "进程关系", "浏览进程树、父进程链与启动信息");
         ui.add_space(ui::SPACE_16);
-        ui::tech_card(ui, palette.accent, |ui| {
-            ui.horizontal_wrapped(|ui| {
+        ui::card(ui, |ui| {
+            ui.horizontal(|ui| {
+                let refresh_width = 92.0;
+                let filter_width = (ui.available_width() - refresh_width - ui::SPACE_8).max(180.0);
                 ui.add_sized(
-                    [ui.available_width().max(120.0), ui::CONTROL_HEIGHT],
-                    ui::text_input(&mut self.tree_filter, "🔍 筛选进程名称或 PID"),
+                    [filter_width, ui::CONTROL_HEIGHT],
+                    ui::text_input(&mut self.tree_filter, "筛选进程名称或 PID"),
                 );
-                if ui::secondary_button(ui, "刷新全部进程树").clicked() {
+                if ui::secondary_button_sized(ui, "刷新", [refresh_width, ui::CONTROL_HEIGHT])
+                    .clicked()
+                {
                     self.tree_requested = true;
                     self.tree_refresh_pending = true;
                     actions.push(AppAction::LoadProcessTree);
@@ -128,37 +128,25 @@ impl ToolModule for ProcessInspectorTool {
                     .collect::<HashMap<_, _>>();
                 let roots = snapshot.roots.clone();
 
-                // 顶部进程指标磁贴
                 let selected_str = self
                     .selected_pid
                     .map_or_else(|| "未选择".to_owned(), |pid| format!("PID {pid}"));
-                let tile_w = ((ui.available_width() - ui::SPACE_12 * 2.0) / 3.0).max(140.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui::metric_tile(
-                        ui,
-                        tile_w,
-                        "存活进程总数",
-                        &snapshot.nodes.len().to_string(),
-                        "个节点",
-                        palette.accent,
-                    );
-                    ui::metric_tile(
-                        ui,
-                        tile_w,
-                        "根进程分支数",
-                        &roots.len().to_string(),
-                        "个根系",
-                        palette.accent_secondary,
-                    );
-                    ui::metric_tile(
-                        ui,
-                        tile_w,
-                        "当前选中目标",
-                        &selected_str,
-                        "",
-                        palette.warning_text,
-                    );
-                });
+                egui::Frame::new()
+                    .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
+                    .corner_radius(egui::CornerRadius::same(5))
+                    .inner_margin(egui::Margin::symmetric(12, 8))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("进程：{}", snapshot.nodes.len()));
+                            ui.separator();
+                            ui.label(format!("根节点：{}", roots.len()));
+                            ui.separator();
+                            ui.label(
+                                RichText::new(format!("选中：{selected_str}"))
+                                    .color(palette.accent),
+                            );
+                        });
+                    });
                 ui.add_space(ui::SPACE_16);
 
                 let panel_height = (ui.ctx().screen_rect().height() * 0.58).clamp(420.0, 950.0);

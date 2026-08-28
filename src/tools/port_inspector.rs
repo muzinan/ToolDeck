@@ -106,14 +106,10 @@ impl ToolModule for PortInspectorTool {
     fn ui(&mut self, ui: &mut egui::Ui, _context: ToolUiContext) -> Vec<AppAction> {
         let mut actions = Vec::new();
         let palette = ui::palette_for_ui(ui);
-        heading(
-            ui,
-            "端口占用检测",
-            "通过 Windows IP Helper API 实时列出系统 TCP / UDP 监听端点、网络套接字与进程归属。",
-        );
+        heading(ui, "端口监控", "查看 TCP、UDP 端点、连接状态与所属进程");
         ui.add_space(ui::SPACE_16);
 
-        ui::tech_card(ui, palette.accent, |ui| {
+        ui::card(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.add_sized(
                     [220.0, ui::CONTROL_HEIGHT],
@@ -362,9 +358,7 @@ impl PortInspectorTool {
         });
         if invalid_port {
             ui.add_space(ui::SPACE_4);
-            ui.label(
-                RichText::new("⚠ 精确端口必须是 1 到 65535 的整数").color(ui::danger_text(ui)),
-            );
+            ui.label(RichText::new("精确端口必须是 1 到 65535 的整数").color(ui::danger_text(ui)));
         }
         ui.add_space(ui::SPACE_8);
         let table_height = (ui.ctx().screen_rect().height() * 0.58).clamp(420.0, 950.0);

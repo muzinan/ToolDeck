@@ -1,5 +1,5 @@
-//! Windows Toolbox 的共享视觉语言与组件系统。
-//! 该模块负责 Windows 中文字体回退、科技感主题令牌、标准化控件（输入框、指标磁贴、各类按钮、徽标、卡片）与矢量图标。
+//! ToolDeck 的共享视觉语言与组件系统。
+//! 该模块负责 Windows 中文字体、工业工作台主题令牌、标准控件和无文字矢量图标。
 
 use std::{
     env, fs,
@@ -21,12 +21,32 @@ pub const SPACE_8: f32 = 8.0;
 pub const SPACE_12: f32 = 12.0;
 pub const SPACE_16: f32 = 16.0;
 pub const SPACE_20: f32 = 20.0;
-pub const SPACE_24: f32 = 24.0;
 pub const SPACE_32: f32 = 32.0;
+
+/// 页面内容的标准横向留白，单位为 egui point。
+pub const PAGE_PADDING: f32 = 24.0;
 
 /// 标准控件高度规范
 pub const CONTROL_HEIGHT: f32 = 34.0;
 pub const COMPACT_CONTROL_HEIGHT: f32 = 26.0;
+
+/// 应用外壳与通用操作使用的无文字矢量图标。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AppIcon {
+    Home,
+    File,
+    Network,
+    System,
+    Developer,
+    Settings,
+    About,
+    Theme,
+    Star,
+    Back,
+    Copy,
+    Export,
+    Clear,
+}
 
 /// 工具操作栏在窄窗口中的布局策略，避免输入与按钮互相挤压。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -64,49 +84,49 @@ pub fn theme_palette(theme: egui::Theme) -> ThemePalette {
     let dark = theme == egui::Theme::Dark;
     if dark {
         ThemePalette {
-            accent: Color32::from_rgb(0, 225, 255), // 赛博电光青 (Cyber Neon Cyan)
-            accent_hover: Color32::from_rgb(56, 235, 255),
-            accent_secondary: Color32::from_rgb(129, 140, 248), // 量子紫 (Quantum Violet)
-            primary_button: Color32::from_rgb(2, 116, 180),     // 科技深蓝
-            primary_button_hover: Color32::from_rgb(3, 136, 209),
-            secondary_button_bg: Color32::from_rgb(22, 32, 57),
-            secondary_button_hover: Color32::from_rgb(31, 45, 80),
-            danger_button: Color32::from_rgb(190, 24, 60), // 激光霓虹红
-            danger_button_hover: Color32::from_rgb(225, 29, 72),
-            surface: Color32::from_rgb(16, 23, 41), // 黑曜石卡片面
-            surface_elevated: Color32::from_rgb(22, 32, 57), // 悬浮科技卡片
-            panel: Color32::from_rgb(10, 14, 26),   // 深空主背景/侧边栏
-            border: Color32::from_rgb(37, 52, 90),  // 科技边框
-            border_subtle: Color32::from_rgb(25, 36, 64),
-            text: Color32::from_rgb(241, 245, 249), // 极客钛白
-            weak: Color32::from_rgb(150, 168, 196), // 科技银灰
-            success_text: Color32::from_rgb(52, 211, 153), // 矩阵翡翠绿
-            danger_text: Color32::from_rgb(251, 113, 133), // 警示红
-            warning_text: Color32::from_rgb(251, 191, 36), // 琥珀金
-            hover: Color32::from_rgb(26, 38, 68),
+            accent: Color32::from_rgb(30, 192, 224),
+            accent_hover: Color32::from_rgb(63, 210, 235),
+            accent_secondary: Color32::from_rgb(105, 168, 186),
+            primary_button: Color32::from_rgb(0, 105, 137),
+            primary_button_hover: Color32::from_rgb(0, 125, 158),
+            secondary_button_bg: Color32::from_rgb(30, 36, 42),
+            secondary_button_hover: Color32::from_rgb(38, 45, 52),
+            danger_button: Color32::from_rgb(184, 55, 61),
+            danger_button_hover: Color32::from_rgb(205, 65, 72),
+            surface: Color32::from_rgb(25, 30, 35),
+            surface_elevated: Color32::from_rgb(30, 36, 42),
+            panel: Color32::from_rgb(18, 23, 27),
+            border: Color32::from_rgb(62, 71, 78),
+            border_subtle: Color32::from_rgb(45, 53, 59),
+            text: Color32::from_rgb(232, 237, 240),
+            weak: Color32::from_rgb(166, 176, 183),
+            success_text: Color32::from_rgb(84, 201, 115),
+            danger_text: Color32::from_rgb(242, 99, 103),
+            warning_text: Color32::from_rgb(235, 177, 65),
+            hover: Color32::from_rgb(35, 45, 51),
         }
     } else {
         ThemePalette {
-            accent: Color32::from_rgb(2, 116, 180),
-            accent_hover: Color32::from_rgb(3, 90, 145),
-            accent_secondary: Color32::from_rgb(79, 70, 229),
-            primary_button: Color32::from_rgb(2, 116, 180),
-            primary_button_hover: Color32::from_rgb(3, 90, 145),
-            secondary_button_bg: Color32::from_rgb(241, 245, 249),
-            secondary_button_hover: Color32::from_rgb(226, 232, 240),
-            danger_button: Color32::from_rgb(190, 24, 60),
-            danger_button_hover: Color32::from_rgb(159, 18, 57),
+            accent: Color32::from_rgb(0, 125, 158),
+            accent_hover: Color32::from_rgb(0, 101, 132),
+            accent_secondary: Color32::from_rgb(51, 112, 132),
+            primary_button: Color32::from_rgb(0, 105, 137),
+            primary_button_hover: Color32::from_rgb(0, 91, 120),
+            secondary_button_bg: Color32::from_rgb(245, 247, 248),
+            secondary_button_hover: Color32::from_rgb(234, 239, 241),
+            danger_button: Color32::from_rgb(181, 51, 59),
+            danger_button_hover: Color32::from_rgb(151, 40, 48),
             surface: Color32::WHITE,
-            surface_elevated: Color32::from_rgb(248, 250, 252),
-            panel: Color32::from_rgb(241, 245, 249),
-            border: Color32::from_rgb(203, 213, 225),
-            border_subtle: Color32::from_rgb(226, 232, 240),
-            text: Color32::from_rgb(15, 23, 42),
-            weak: Color32::from_rgb(71, 85, 105),
-            success_text: Color32::from_rgb(5, 122, 85),
-            danger_text: Color32::from_rgb(190, 24, 60),
-            warning_text: Color32::from_rgb(180, 83, 9),
-            hover: Color32::from_rgb(224, 242, 254),
+            surface_elevated: Color32::from_rgb(248, 250, 250),
+            panel: Color32::from_rgb(239, 243, 244),
+            border: Color32::from_rgb(190, 201, 205),
+            border_subtle: Color32::from_rgb(220, 227, 229),
+            text: Color32::from_rgb(25, 35, 40),
+            weak: Color32::from_rgb(76, 91, 98),
+            success_text: Color32::from_rgb(32, 126, 61),
+            danger_text: Color32::from_rgb(174, 47, 54),
+            warning_text: Color32::from_rgb(151, 101, 8),
+            hover: Color32::from_rgb(224, 239, 242),
         }
     }
 }
@@ -256,14 +276,14 @@ fn configure_style(style: &mut egui::Style, theme: egui::Theme) {
     style.visuals.window_fill = palette.surface;
     style.visuals.extreme_bg_color = palette.surface;
     style.visuals.faint_bg_color = if dark {
-        Color32::from_rgb(20, 28, 50)
+        Color32::from_rgb(29, 35, 40)
     } else {
-        Color32::from_rgb(246, 249, 253)
+        Color32::from_rgb(246, 248, 249)
     };
     style.visuals.code_bg_color = if dark {
-        Color32::from_rgb(22, 32, 57)
+        Color32::from_rgb(31, 37, 42)
     } else {
-        Color32::from_rgb(238, 243, 250)
+        Color32::from_rgb(239, 243, 244)
     };
     style.visuals.window_stroke = Stroke::new(1.0_f32, palette.border);
     style.visuals.widgets.noninteractive.bg_fill = palette.surface;
@@ -296,8 +316,8 @@ fn configure_style(style: &mut egui::Style, theme: egui::Theme) {
     style.visuals.selection.stroke = Stroke::new(1.0_f32, palette.accent);
     style.visuals.hyperlink_color = palette.accent;
     style.visuals.weak_text_color = Some(palette.weak);
-    style.visuals.window_corner_radius = CornerRadius::same(10);
-    style.visuals.menu_corner_radius = CornerRadius::same(8);
+    style.visuals.window_corner_radius = CornerRadius::same(6);
+    style.visuals.menu_corner_radius = CornerRadius::same(6);
 }
 
 /// 当前主题的强调色。
@@ -329,34 +349,36 @@ pub fn warning_text(ui: &egui::Ui) -> Color32 {
     palette_for_ui(ui).warning_text
 }
 
-/// 绘制高科技页面标头，包含赛博前缀、标题与描述副标题。
+/// 绘制工作台页面标头，标题与说明使用独立基线。
 pub fn page_heading(ui: &mut egui::Ui, title: &str, subtitle: &str) {
-    ui.horizontal(|ui| {
-        let palette = palette_for_ui(ui);
-        // 科技感前置指示柱
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(4.0, 24.0), egui::Sense::hover());
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(2), palette.accent);
-        ui.add_space(SPACE_4);
-        ui.vertical(|ui| {
-            ui.label(RichText::new(title).size(22.0).strong().color(palette.text));
-            if !subtitle.is_empty() {
-                ui.add_space(1.0);
-                ui.label(RichText::new(subtitle).size(13.0).color(palette.weak));
-            }
-        });
+    let palette = palette_for_ui(ui);
+    ui.vertical(|ui| {
+        ui.label(RichText::new(title).size(20.0).strong().color(palette.text));
+        if !subtitle.is_empty() {
+            ui.add_space(2.0);
+            ui.label(RichText::new(subtitle).size(12.5).color(palette.weak));
+        }
     });
 }
 
-/// 绘制标准卡片容器，具有统一的科技圆角、背景与微妙边框。
+/// 绘制标准工具容器；仅用于确实需要边界的重复项目或工具区。
 pub fn card(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
     let palette = palette_for_ui(ui);
     let frame = Frame::new()
         .fill(palette.surface)
         .stroke(Stroke::new(1.0_f32, palette.border))
         .corner_radius(CornerRadius::same(8))
-        .inner_margin(Margin::same(SPACE_16 as i8));
+        .inner_margin(Margin::same(SPACE_12 as i8));
     frame.show(ui, add_contents);
+}
+
+/// 绘制平面页面分区，通过底部分隔线建立层级，避免页面套卡片。
+pub fn section(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    Frame::new()
+        .fill(Color32::TRANSPARENT)
+        .inner_margin(Margin::symmetric(0, SPACE_12 as i8))
+        .show(ui, add_contents);
+    ui.separator();
 }
 
 /// 绘制带有侧边发光高亮条的科技感重点卡片。
@@ -630,23 +652,313 @@ pub fn status_pill(ui: &mut egui::Ui, text: &str, color: Color32) -> egui::Respo
     response
 }
 
-/// 现代图标徽章容器，绘制带彩色底色的图标。
-pub fn icon_badge(
+/// 绘制固定尺寸的无文字图标按钮，tooltip 由调用方提供可读名称。
+pub fn icon_button(
     ui: &mut egui::Ui,
-    icon: ToolIcon,
+    icon: AppIcon,
+    tooltip: &str,
+    selected: bool,
+) -> egui::Response {
+    icon_button_sized(ui, icon, tooltip, selected, 36.0)
+}
+
+/// 绘制可指定尺寸的无文字图标按钮。
+pub fn icon_button_sized(
+    ui: &mut egui::Ui,
+    icon: AppIcon,
+    tooltip: &str,
+    selected: bool,
     size: f32,
-    icon_color: Color32,
-    bg_color: Color32,
-) {
-    let (response, painter) = ui.allocate_painter(Vec2::splat(size), egui::Sense::hover());
-    painter.rect(
-        response.rect,
-        CornerRadius::same(8),
-        bg_color,
-        Stroke::new(1.0_f32, icon_color.gamma_multiply(0.30)),
-        egui::StrokeKind::Middle,
+) -> egui::Response {
+    let palette = palette_for_ui(ui);
+    let (rect, mut response) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::click());
+    let fill = if selected {
+        palette
+            .accent
+            .gamma_multiply(if ui.visuals().dark_mode { 0.18 } else { 0.11 })
+    } else if response.hovered() {
+        palette.hover
+    } else {
+        Color32::TRANSPARENT
+    };
+    ui.painter().rect_filled(rect, CornerRadius::same(5), fill);
+    if selected || response.has_focus() {
+        ui.painter().rect_stroke(
+            rect.shrink(0.5),
+            CornerRadius::same(5),
+            Stroke::new(1.0_f32, palette.accent),
+            egui::StrokeKind::Middle,
+        );
+    }
+    paint_app_icon(
+        ui.painter(),
+        rect.shrink(size * 0.23),
+        icon,
+        if selected {
+            palette.accent
+        } else {
+            palette.weak
+        },
     );
-    paint_tool_icon(&painter, response.rect, icon, icon_color);
+    if response.clicked() {
+        response.request_focus();
+    }
+    response = response.on_hover_text(tooltip);
+    response
+}
+
+/// 在指定矩形内绘制应用级线性图标。
+pub fn paint_app_icon(painter: &egui::Painter, bounds: egui::Rect, icon: AppIcon, color: Color32) {
+    let size = bounds.width().min(bounds.height());
+    let rect = egui::Rect::from_center_size(bounds.center(), Vec2::splat(size));
+    let stroke = Stroke::new((size * 0.09).max(1.4), color);
+    let center = rect.center();
+    match icon {
+        AppIcon::Home => {
+            let roof_left = rect.left_center() + Vec2::new(0.0, -size * 0.08);
+            let roof_top = rect.center_top();
+            let roof_right = rect.right_center() + Vec2::new(0.0, -size * 0.08);
+            painter.line_segment([roof_left, roof_top], stroke);
+            painter.line_segment([roof_top, roof_right], stroke);
+            painter.line_segment([roof_left, rect.left_bottom()], stroke);
+            painter.line_segment([roof_right, rect.right_bottom()], stroke);
+            painter.line_segment([rect.left_bottom(), rect.right_bottom()], stroke);
+        }
+        AppIcon::File => {
+            painter.rect_stroke(
+                rect.shrink(size * 0.10),
+                CornerRadius::same(2),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            for offset in [-0.16, 0.04, 0.24] {
+                let y = center.y + size * offset;
+                painter.line_segment(
+                    [
+                        egui::pos2(rect.left() + size * 0.22, y),
+                        egui::pos2(rect.right() - size * 0.22, y),
+                    ],
+                    stroke,
+                );
+            }
+        }
+        AppIcon::Network => {
+            let top = rect.center_top() + Vec2::new(0.0, size * 0.08);
+            let left = rect.left_bottom() + Vec2::new(size * 0.08, -size * 0.08);
+            let right = rect.right_bottom() + Vec2::new(-size * 0.08, -size * 0.08);
+            painter.line_segment([top, left], stroke);
+            painter.line_segment([top, right], stroke);
+            painter.line_segment([left, right], stroke);
+            for point in [top, left, right] {
+                painter.circle_filled(point, size * 0.10, color);
+            }
+        }
+        AppIcon::System => {
+            painter.rect_stroke(
+                rect.shrink(size * 0.08),
+                CornerRadius::same(2),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(center.x, rect.bottom() - size * 0.08),
+                    egui::pos2(center.x, rect.bottom() + size * 0.10),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(center.x - size * 0.24, rect.bottom() + size * 0.10),
+                    egui::pos2(center.x + size * 0.24, rect.bottom() + size * 0.10),
+                ],
+                stroke,
+            );
+        }
+        AppIcon::Developer => {
+            painter.line_segment(
+                [
+                    center + Vec2::new(-size * 0.10, -size * 0.36),
+                    center + Vec2::new(-size * 0.36, 0.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + Vec2::new(-size * 0.36, 0.0),
+                    center + Vec2::new(-size * 0.10, size * 0.36),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + Vec2::new(size * 0.10, -size * 0.36),
+                    center + Vec2::new(size * 0.36, 0.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + Vec2::new(size * 0.36, 0.0),
+                    center + Vec2::new(size * 0.10, size * 0.36),
+                ],
+                stroke,
+            );
+        }
+        AppIcon::Settings => {
+            painter.circle_stroke(center, size * 0.22, stroke);
+            painter.circle_stroke(center, size * 0.07, stroke);
+            for direction in [
+                Vec2::new(1.0, 0.0),
+                Vec2::new(-1.0, 0.0),
+                Vec2::new(0.0, 1.0),
+                Vec2::new(0.0, -1.0),
+            ] {
+                painter.line_segment(
+                    [
+                        center + direction * size * 0.26,
+                        center + direction * size * 0.42,
+                    ],
+                    stroke,
+                );
+            }
+        }
+        AppIcon::About => {
+            painter.circle_stroke(center, size * 0.42, stroke);
+            painter.circle_filled(center + Vec2::new(0.0, -size * 0.20), size * 0.06, color);
+            painter.line_segment(
+                [
+                    center + Vec2::new(0.0, -size * 0.03),
+                    center + Vec2::new(0.0, size * 0.24),
+                ],
+                stroke,
+            );
+        }
+        AppIcon::Theme => {
+            painter.circle_stroke(center, size * 0.20, stroke);
+            for direction in [
+                Vec2::new(1.0, 0.0),
+                Vec2::new(-1.0, 0.0),
+                Vec2::new(0.0, 1.0),
+                Vec2::new(0.0, -1.0),
+            ] {
+                painter.line_segment(
+                    [
+                        center + direction * size * 0.29,
+                        center + direction * size * 0.42,
+                    ],
+                    stroke,
+                );
+            }
+        }
+        AppIcon::Star => {
+            let points: Vec<_> = (0..10)
+                .map(|index| {
+                    let angle =
+                        -std::f32::consts::FRAC_PI_2 + index as f32 * std::f32::consts::PI / 5.0;
+                    let radius = if index % 2 == 0 {
+                        size * 0.42
+                    } else {
+                        size * 0.18
+                    };
+                    center + Vec2::angled(angle) * radius
+                })
+                .collect();
+            painter.add(egui::Shape::closed_line(points, stroke));
+        }
+        AppIcon::Back => {
+            painter.line_segment(
+                [
+                    center + Vec2::new(-size * 0.34, 0.0),
+                    center + Vec2::new(size * 0.34, 0.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + Vec2::new(-size * 0.34, 0.0),
+                    center + Vec2::new(-size * 0.08, -size * 0.26),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + Vec2::new(-size * 0.34, 0.0),
+                    center + Vec2::new(-size * 0.08, size * 0.26),
+                ],
+                stroke,
+            );
+        }
+        AppIcon::Copy => {
+            let first = rect
+                .shrink(size * 0.14)
+                .translate(Vec2::new(-size * 0.08, -size * 0.08));
+            let second = rect
+                .shrink(size * 0.14)
+                .translate(Vec2::new(size * 0.08, size * 0.08));
+            painter.rect_stroke(
+                first,
+                CornerRadius::same(2),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.rect_stroke(
+                second,
+                CornerRadius::same(2),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+        }
+        AppIcon::Export => {
+            painter.line_segment(
+                [
+                    center + Vec2::new(0.0, size * 0.30),
+                    center + Vec2::new(0.0, -size * 0.34),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + Vec2::new(0.0, -size * 0.34),
+                    center + Vec2::new(-size * 0.20, -size * 0.14),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + Vec2::new(0.0, -size * 0.34),
+                    center + Vec2::new(size * 0.20, -size * 0.14),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + Vec2::new(-size * 0.36, size * 0.30),
+                    center + Vec2::new(size * 0.36, size * 0.30),
+                ],
+                stroke,
+            );
+        }
+        AppIcon::Clear => {
+            let body = egui::Rect::from_center_size(
+                center + Vec2::new(0.0, size * 0.08),
+                Vec2::new(size * 0.52, size * 0.58),
+            );
+            painter.rect_stroke(
+                body,
+                CornerRadius::same(2),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.line_segment(
+                [
+                    center + Vec2::new(-size * 0.34, -size * 0.28),
+                    center + Vec2::new(size * 0.34, -size * 0.28),
+                ],
+                stroke,
+            );
+        }
+    }
 }
 
 /// 在固定方形区域内绘制一致的线性工具图标。

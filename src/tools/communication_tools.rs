@@ -160,11 +160,11 @@ impl CommonCommunicationState {
     fn render_status(&self, ui: &mut egui::Ui, protocol: &str, endpoint: &str) {
         let palette = ui::palette_for_ui(ui);
         let state_label = match self.state {
-            CommunicationSessionState::Starting => "STARTING",
-            CommunicationSessionState::Listening => "LISTENING",
-            CommunicationSessionState::Connected => "CONNECTED",
-            CommunicationSessionState::Stopped => "STOPPED",
-            CommunicationSessionState::Failed => "FAILED",
+            CommunicationSessionState::Starting => "启动中",
+            CommunicationSessionState::Listening => "监听中",
+            CommunicationSessionState::Connected => "已连接",
+            CommunicationSessionState::Stopped => "未连接",
+            CommunicationSessionState::Failed => "失败",
         };
         let state_color = match self.state {
             CommunicationSessionState::Connected | CommunicationSessionState::Listening => {
@@ -174,33 +174,28 @@ impl CommonCommunicationState {
             CommunicationSessionState::Starting => palette.accent,
             CommunicationSessionState::Stopped => palette.weak,
         };
-        let tile_width = ((ui.available_width() - ui::SPACE_12 * 2.0) / 3.0).max(140.0);
-        ui.horizontal_wrapped(|ui| {
-            ui::metric_tile(
-                ui,
-                tile_width,
-                "会话状态",
-                state_label,
-                &self.status_detail,
-                state_color,
-            );
-            ui::metric_tile(
-                ui,
-                tile_width,
-                "通信端点",
-                endpoint,
-                protocol,
-                palette.accent,
-            );
-            ui::metric_tile(
-                ui,
-                tile_width,
-                "记录与载荷",
-                &self.log.records().len().to_string(),
-                &format!("{} bytes", self.log.payload_bytes()),
-                palette.accent_secondary,
-            );
-        });
+        egui::Frame::new()
+            .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
+            .corner_radius(egui::CornerRadius::same(5))
+            .inner_margin(egui::Margin::symmetric(12, 8))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui::status_pill(ui, state_label, state_color);
+                    ui.separator();
+                    ui.label(RichText::new(protocol).strong().color(palette.accent));
+                    ui.label(RichText::new(endpoint).monospace().color(palette.text));
+                    ui.separator();
+                    ui.label(format!("记录：{}", self.log.records().len()));
+                    ui.label(format!("载荷：{} B", self.log.payload_bytes()));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(&self.status_detail)
+                                .size(12.0)
+                                .color(palette.weak),
+                        );
+                    });
+                });
+            });
         if let Some(error) = &self.error {
             ui.add_space(ui::SPACE_8);
             ui::state_card(ui, "通信操作失败", error, palette.danger_text);
@@ -211,7 +206,7 @@ impl CommonCommunicationState {
         let mut actions = Vec::new();
         let palette = ui::palette_for_ui(ui);
         let height = communication_log_height(ui.ctx().screen_rect().height());
-        ui::tech_card(ui, palette.accent, |ui| {
+        ui::card(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label(
                     RichText::new("通信记录")
@@ -241,13 +236,13 @@ impl CommonCommunicationState {
                         );
                     });
                 ui.checkbox(&mut self.auto_scroll, "自动滚动");
-                if ui::small_action_button(ui, "清空").clicked() {
+                if ui::icon_button(ui, ui::AppIcon::Clear, "清空通信记录", false).clicked() {
                     self.log.clear();
                 }
-                if ui::small_action_button(ui, "复制").clicked() {
+                if ui::icon_button(ui, ui::AppIcon::Copy, "复制通信记录", false).clicked() {
                     actions.push(AppAction::CopyText(self.log.export(self.receive_format)));
                 }
-                if ui::small_action_button(ui, "导出 .log").clicked() {
+                if ui::icon_button(ui, ui::AppIcon::Export, "导出日志", false).clicked() {
                     actions.push(AppAction::ExportCommunicationLog {
                         content: self.log.export(self.receive_format),
                         file_name: format!("{}.log", kind.tool_id()),
@@ -472,11 +467,7 @@ impl ToolModule for TcpDebugTool {
 
     fn ui(&mut self, ui: &mut egui::Ui, _context: ToolUiContext) -> Vec<AppAction> {
         let mut actions = Vec::new();
-        ui::page_heading(
-            ui,
-            "TCP 通信调试",
-            "持续收发原始 TCP 字节流；不进行 TLS 封装。",
-        );
+        ui::page_heading(ui, "TCP 调试", "客户端与多客户端服务端原始字节流收发");
         ui.add_space(ui::SPACE_16);
         ui::card(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -511,13 +502,10 @@ impl ToolModule for TcpDebugTool {
                 ui.add(
                     egui::DragValue::new(&mut self.timeout_ms)
                         .range(100..=30_000)
-                        .prefix("连接超时: ")
+                        .prefix("超时 ")
                         .suffix(" ms"),
                 );
-            });
-            ui.add_space(ui::SPACE_8);
-            ui.horizontal_wrapped(|ui| {
-                if ui::primary_button(ui, "启动 TCP 会话").clicked() {
+                if ui::primary_button(ui, "连接").clicked() {
                     let config = self.config();
                     match config.validate() {
                         Ok(()) => {
@@ -533,7 +521,10 @@ impl ToolModule for TcpDebugTool {
                     self.common.stop_periodic();
                     actions.push(AppAction::StopCommunication(CommunicationKind::Tcp));
                 }
-                if self.mode == TcpDebugMode::Server {
+            });
+            if self.mode == TcpDebugMode::Server {
+                ui.add_space(ui::SPACE_8);
+                ui.horizontal_wrapped(|ui| {
                     ui.checkbox(&mut self.send_all_clients, "发送给全部客户端");
                     if !self.send_all_clients {
                         let selected = self
@@ -555,8 +546,8 @@ impl ToolModule for TcpDebugTool {
                             });
                     }
                     ui.label(format!("已连接 {} / 32", self.common.peers.len()));
-                }
-            });
+                });
+            }
         });
         ui.add_space(ui::SPACE_12);
         let endpoint = format!("{}:{}", self.address.trim(), self.port);
@@ -681,11 +672,7 @@ impl ToolModule for UdpDebugTool {
 
     fn ui(&mut self, ui: &mut egui::Ui, _context: ToolUiContext) -> Vec<AppAction> {
         let mut actions = Vec::new();
-        ui::page_heading(
-            ui,
-            "UDP 通信调试",
-            "保留数据报边界与来源，可发送到默认远端或回复选中来源。",
-        );
+        ui::page_heading(ui, "UDP 调试", "保留数据报边界、来源与目标信息");
         ui.add_space(ui::SPACE_16);
         ui::card(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -707,33 +694,7 @@ impl ToolModule for UdpDebugTool {
                     ui::text_input(&mut self.remote_address, "可留空"),
                 );
                 ui.add(egui::DragValue::new(&mut self.remote_port).prefix("端口: "));
-            });
-            ui.add_space(ui::SPACE_8);
-            ui.horizontal_wrapped(|ui| {
-                ui.add_enabled_ui(self.family == CommunicationIpFamily::V4, |ui| {
-                    ui.checkbox(&mut self.broadcast, "IPv4 广播");
-                    ui.checkbox(&mut self.multicast_enabled, "加入 IPv4 组播组");
-                });
-                if self.multicast_enabled {
-                    ui.add_sized(
-                        [145.0, ui::CONTROL_HEIGHT],
-                        ui::text_input(&mut self.multicast_group, "组播地址"),
-                    );
-                    ui.add_sized(
-                        [145.0, ui::CONTROL_HEIGHT],
-                        ui::text_input(&mut self.multicast_interface, "本地 IPv4 接口"),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut self.multicast_ttl)
-                            .range(1..=255)
-                            .prefix("TTL: "),
-                    );
-                    ui.checkbox(&mut self.multicast_loopback, "本机回环");
-                }
-            });
-            ui.add_space(ui::SPACE_8);
-            ui.horizontal_wrapped(|ui| {
-                if ui::primary_button(ui, "启动 UDP 会话").clicked() {
+                if ui::primary_button(ui, "启动").clicked() {
                     let config = self.config();
                     match config.validate() {
                         Ok(()) => {
@@ -751,6 +712,37 @@ impl ToolModule for UdpDebugTool {
                     self.common.stop_periodic();
                     actions.push(AppAction::StopCommunication(CommunicationKind::Udp));
                 }
+            });
+            ui.add_space(ui::SPACE_8);
+            egui::CollapsingHeader::new("广播与组播")
+                .id_salt("udp-broadcast-multicast")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add_enabled_ui(self.family == CommunicationIpFamily::V4, |ui| {
+                            ui.checkbox(&mut self.broadcast, "IPv4 广播");
+                            ui.checkbox(&mut self.multicast_enabled, "加入 IPv4 组播组");
+                        });
+                        if self.multicast_enabled {
+                            ui.add_sized(
+                                [145.0, ui::CONTROL_HEIGHT],
+                                ui::text_input(&mut self.multicast_group, "组播地址"),
+                            );
+                            ui.add_sized(
+                                [145.0, ui::CONTROL_HEIGHT],
+                                ui::text_input(&mut self.multicast_interface, "本地 IPv4 接口"),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut self.multicast_ttl)
+                                    .range(1..=255)
+                                    .prefix("TTL: "),
+                            );
+                            ui.checkbox(&mut self.multicast_loopback, "本机回环");
+                        }
+                    });
+                });
+            ui.add_space(ui::SPACE_8);
+            ui.horizontal_wrapped(|ui| {
                 ui.checkbox(&mut self.reply_selected_source, "回复选中接收来源");
                 if self.reply_selected_source {
                     let selected = self
@@ -876,11 +868,7 @@ impl ToolModule for SerialDebugTool {
 
     fn ui(&mut self, ui: &mut egui::Ui, _context: ToolUiContext) -> Vec<AppAction> {
         let mut actions = Vec::new();
-        ui::page_heading(
-            ui,
-            "串口通信调试",
-            "独占打开 COM 口，设备拔出或读写失败后需要手动重连。",
-        );
+        ui::page_heading(ui, "串口调试", "配置 COM 口并持续收发文本或 HEX 数据");
         ui.add_space(ui::SPACE_16);
         ui::card(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -958,13 +946,10 @@ impl ToolModule for SerialDebugTool {
                 ui.add(
                     egui::DragValue::new(&mut self.read_timeout_ms)
                         .range(10..=1_000)
-                        .prefix("读取超时: ")
+                        .prefix("超时 ")
                         .suffix(" ms"),
                 );
-            });
-            ui.add_space(ui::SPACE_8);
-            ui.horizontal_wrapped(|ui| {
-                if ui::primary_button(ui, "打开串口").clicked() {
+                if ui::primary_button(ui, "打开").clicked() {
                     let config = self.config();
                     match config.validate() {
                         Ok(()) => {
@@ -980,7 +965,6 @@ impl ToolModule for SerialDebugTool {
                     self.common.stop_periodic();
                     actions.push(AppAction::StopCommunication(CommunicationKind::Serial));
                 }
-                ui.label("默认 115200 · 8N1 · 无流控 · 50 ms");
             });
         });
         ui.add_space(ui::SPACE_12);

@@ -1,8 +1,6 @@
 //! 导航侧栏使用的纯导航数据处理。
 
-use std::collections::HashMap;
-
-use crate::tools::{ToolCategory, ToolDescriptor};
+use crate::tools::ToolDescriptor;
 
 /// 按工具注册顺序返回有效收藏，重复和失效 ID 会被忽略。
 pub(super) fn favorite_descriptors(
@@ -19,15 +17,6 @@ pub(super) fn favorite_descriptors(
         .cloned()
         .collect()
 }
-/// 统计各个分类下的工具数量。
-pub(super) fn category_counts(descriptors: &[ToolDescriptor]) -> HashMap<ToolCategory, usize> {
-    let mut counts = HashMap::new();
-    for descriptor in descriptors {
-        *counts.entry(descriptor.category).or_insert(0) += 1;
-    }
-    counts
-}
-
 /// 按当前注册顺序保留收藏项，清除旧版本遗留的无效或重复工具标识。
 pub(super) fn normalize_favorite_tools(
     descriptors: &[ToolDescriptor],

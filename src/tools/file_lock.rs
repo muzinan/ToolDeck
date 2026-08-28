@@ -49,13 +49,9 @@ impl ToolModule for FileLockTool {
     fn ui(&mut self, ui: &mut egui::Ui, _context: ToolUiContext) -> Vec<AppAction> {
         let mut actions = Vec::new();
         let palette = ui::palette_for_ui(ui);
-        heading(
-            ui,
-            "文件占用与句柄检测",
-            "基于 Windows Restart Manager 探测锁定目标文件的活跃进程与句柄占用者。",
-        );
+        heading(ui, "文件占用", "定位正在使用目标文件的进程");
         ui.add_space(ui::SPACE_16);
-        ui::tech_card(ui, palette.accent, |ui| {
+        ui::card(ui, |ui| {
             match ui::action_layout(ui.available_width()) {
                 ui::ActionLayout::Horizontal => {
                     let mut submit = false;
