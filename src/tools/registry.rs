@@ -9,13 +9,9 @@ use super::ToolModule;
 /// 工具的导航分类，分类不是 UI 字符串，避免未来添加本地化时影响业务逻辑。
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum ToolCategory {
-    File,
+    Diagnostic,
     Network,
-    System,
-    Developer,
-    Text,
-    Security,
-    Other,
+    Communication,
 }
 
 /// 工具在导航与首页中的无文字线性图标类型。
@@ -34,25 +30,13 @@ pub enum ToolIcon {
 }
 
 impl ToolCategory {
-    pub const ALL: [Self; 7] = [
-        Self::File,
-        Self::Network,
-        Self::System,
-        Self::Developer,
-        Self::Text,
-        Self::Security,
-        Self::Other,
-    ];
+    pub const ALL: [Self; 3] = [Self::Diagnostic, Self::Network, Self::Communication];
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::File => "文件",
+            Self::Diagnostic => "诊断",
             Self::Network => "网络",
-            Self::System => "系统",
-            Self::Developer => "开发者",
-            Self::Text => "文本",
-            Self::Security => "安全",
-            Self::Other => "其他",
+            Self::Communication => "通信",
         }
     }
 }
@@ -184,7 +168,7 @@ mod tests {
                 id: "stub",
                 name: "Stub",
                 description: "Registry test helper",
-                category: ToolCategory::Other,
+                category: ToolCategory::Diagnostic,
                 icon: ToolIcon::FileLock,
                 keywords: &["stub"],
             }
@@ -211,7 +195,7 @@ mod tests {
     fn registry_exposes_all_v0_tools() {
         let registry = build_registry();
         assert_eq!(registry.descriptors().len(), 10);
-        assert_eq!(registry.categories().len(), 4);
+        assert_eq!(registry.categories().len(), 3);
     }
 
     #[test]

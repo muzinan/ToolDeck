@@ -76,6 +76,7 @@ pub struct MtrHopStats {
     pub avg_ms: Option<f64>,
     pub max_ms: Option<f64>,
     pub last_ms: Option<f64>,
+    pub jitter_ms: Option<f64>,
     pub status: String,
 }
 
@@ -91,6 +92,7 @@ impl MtrHopStats {
             avg_ms: None,
             max_ms: None,
             last_ms: None,
+            jitter_ms: None,
             status: "等待探测".into(),
         }
     }
@@ -115,6 +117,7 @@ impl MtrHopStats {
         let Some(elapsed_ms) = elapsed_ms else {
             return;
         };
+        let previous_last = self.last_ms;
         self.received += 1;
         self.last_ms = Some(elapsed_ms);
         self.min_ms = Some(
@@ -127,6 +130,12 @@ impl MtrHopStats {
         );
         let previous = self.avg_ms.unwrap_or(0.0) * f64::from(self.received - 1);
         self.avg_ms = Some((previous + elapsed_ms) / f64::from(self.received));
+        if let Some(previous_last) = previous_last {
+            let delta = (elapsed_ms - previous_last).abs();
+            let transition_count = self.received - 1;
+            let previous_total = self.jitter_ms.unwrap_or(0.0) * f64::from(transition_count - 1);
+            self.jitter_ms = Some((previous_total + delta) / f64::from(transition_count));
+        }
     }
 }
 
@@ -186,6 +195,7 @@ mod tests {
         assert_eq!(hop.received, 2);
         assert!((hop.loss_percent() - 33.333).abs() < 0.01);
         assert_eq!(hop.avg_ms, Some(15.0));
+        assert_eq!(hop.jitter_ms, Some(10.0));
     }
 
     #[test]

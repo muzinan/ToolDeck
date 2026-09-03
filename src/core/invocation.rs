@@ -55,33 +55,6 @@ impl ToolInvocation {
         }
     }
 
-    /// 创建内部跨工具调用，复用现有 Process 载荷让端口页按 PID 精确筛选。
-    pub fn ports_for_process(pid: u32) -> Self {
-        Self {
-            tool_id: "port-inspector".to_owned(),
-            payload: ToolPayload::Process { pid },
-        }
-    }
-
-    /// 创建 DNS、Ping 等主机类工具的内部跳转调用。
-    pub fn host(tool_id: impl Into<String>, host: impl Into<String>) -> Self {
-        Self {
-            tool_id: tool_id.into(),
-            payload: ToolPayload::Host { host: host.into() },
-        }
-    }
-
-    /// 创建 TCP 端口测试的内部跳转调用。
-    pub fn tcp_probe(host: impl Into<String>, port: u16) -> Self {
-        Self {
-            tool_id: "tcp-probe".to_owned(),
-            payload: ToolPayload::HostPort {
-                host: host.into(),
-                port,
-            },
-        }
-    }
-
     pub fn from_command_line() -> Result<Option<Self>, AppError> {
         Self::parse(std::env::args_os().skip(1))
     }
@@ -277,18 +250,6 @@ mod tests {
     #[test]
     fn parse_without_arguments_keeps_existing_none_semantics() {
         assert_eq!(ToolInvocation::parse(Vec::<OsString>::new()).unwrap(), None);
-    }
-
-    #[test]
-    fn internal_port_pid_jump_reuses_existing_wire_payload() {
-        let invocation = ToolInvocation::ports_for_process(42);
-        assert_eq!(invocation.tool_id, "port-inspector");
-        assert_eq!(invocation.payload, ToolPayload::Process { pid: 42 });
-        let encoded = serde_json::to_vec(&invocation).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<ToolInvocation>(&encoded).unwrap(),
-            invocation
-        );
     }
 
     #[test]

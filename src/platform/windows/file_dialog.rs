@@ -12,8 +12,8 @@ use windows::{
             CoTaskMemFree, CoUninitialize,
         },
         UI::Shell::{
-            Common::COMDLG_FILTERSPEC, FOS_FORCEFILESYSTEM, FOS_OVERWRITEPROMPT, FileOpenDialog,
-            FileSaveDialog, IFileOpenDialog, IFileSaveDialog, SIGDN_FILESYSPATH,
+            Common::COMDLG_FILTERSPEC, FOS_FORCEFILESYSTEM, FOS_OVERWRITEPROMPT, FileSaveDialog,
+            IFileSaveDialog, SIGDN_FILESYSPATH,
         },
     },
     core::PWSTR,
@@ -30,49 +30,6 @@ impl Drop for ComApartment {
             unsafe { CoUninitialize() };
         }
     }
-}
-
-/// 打开系统文件选择器；用户取消时返回 `Ok(None)`。
-pub fn pick_file() -> Result<Option<PathBuf>, AppError> {
-    // SAFETY: 当前调用位于 GUI 线程；若 eframe 已用其他模式初始化 COM，则沿用现有 apartment。
-    let status = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-    let apartment = if status.is_ok() {
-        ComApartment(true)
-    } else if status == RPC_E_CHANGED_MODE {
-        ComApartment(false)
-    } else {
-        let error = windows::core::Error::from_hresult(status);
-        return Err(dialog_error("无法初始化文件选择器", &error));
-    };
-
-    // SAFETY: FileOpenDialog 是系统注册的进程内 COM 类，返回接口由 windows crate 自动管理引用计数。
-    let dialog: IFileOpenDialog = unsafe {
-        CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
-            .map_err(|error| dialog_error("无法创建文件选择器", &error))?
-    };
-    // SAFETY: dialog 是有效 IFileOpenDialog，选项值由系统接口读取并仅追加文件系统限制。
-    let options = unsafe { dialog.GetOptions() }
-        .map_err(|error| dialog_error("无法读取文件选择器选项", &error))?;
-    // SAFETY: 选项组合来自 Windows SDK，dialog 在调用期间保持有效。
-    unsafe { dialog.SetOptions(options | FOS_FORCEFILESYSTEM) }
-        .map_err(|error| dialog_error("无法配置文件选择器", &error))?;
-    // SAFETY: None 表示无显式父 HWND；系统对话框同步显示并在返回前保持自身生命周期。
-    if let Err(error) = unsafe { dialog.Show(None) } {
-        drop(apartment);
-        if error.code().0 as u32 == 0x8007_04C7 {
-            return Ok(None);
-        }
-        return Err(dialog_error("文件选择器无法显示", &error));
-    }
-    // SAFETY: Show 成功后 GetResult 返回有效 Shell Item；显示名称由 COM 任务分配器分配。
-    let item =
-        unsafe { dialog.GetResult() }.map_err(|error| dialog_error("无法读取选择结果", &error))?;
-    // SAFETY: SIGDN_FILESYSPATH 只请求文件系统路径；成功指针在转换后由 CoTaskMemFree 释放。
-    let raw_path = unsafe { item.GetDisplayName(SIGDN_FILESYSPATH) }
-        .map_err(|error| dialog_error("无法读取所选文件路径", &error))?;
-    let path = unsafe { pwstr_to_path(raw_path) };
-    drop(apartment);
-    Ok(Some(path))
 }
 
 /// 打开系统保存对话框并将 UTF-8 CSV 写入用户确认的路径；取消时静默返回 `Ok(None)`。

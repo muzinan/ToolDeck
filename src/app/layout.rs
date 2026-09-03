@@ -1,22 +1,28 @@
 //! 应用外壳与工具页面的响应式布局规则。
 
 /// 顶部全局栏高度，单位为 egui point。
-pub(super) const TOP_BAR_HEIGHT: f32 = 50.0;
+pub(super) const TOP_BAR_HEIGHT: f32 = 72.0;
 
-/// 分类图标栏固定宽度，单位为 egui point。
-pub(super) const CATEGORY_RAIL_WIDTH: f32 = 56.0;
+/// 宽窗口统一导航栏内容轨道宽度，单位为 egui point。
+///
+/// 1536pt 审查视口中，290pt 轨道与参考图的侧栏右边界对齐。
+pub(super) const UNIFIED_SIDEBAR_WIDTH: f32 = 290.0;
 
-/// 当前分类工具栏固定宽度，单位为 egui point。
-pub(super) const TOOL_NAV_WIDTH: f32 = 232.0;
+/// 窄窗口收起后的统一导航栏宽度，单位为 egui point。
+pub(super) const COMPACT_SIDEBAR_WIDTH: f32 = 72.0;
 
 /// 分类入口固定高度，图标与交互区域不随文字变化。
-pub(super) const CATEGORY_ROW_HEIGHT: f32 = 44.0;
+pub(super) const CATEGORY_ROW_HEIGHT: f32 = 50.0;
+
+/// 首页入口独占侧栏首行，和设计稿中的主导航轨道保持一致。
+pub(super) const HOME_ROW_HEIGHT: f32 = 66.0;
 
 /// 工具入口固定高度，避免字体回退导致导航抖动。
-pub(super) const TOOL_ROW_HEIGHT: f32 = 40.0;
+pub(super) const TOOL_ROW_HEIGHT: f32 = 48.0;
 
-/// 窄窗口在该宽度以下收起工具导航栏。
-pub(super) const COMPACT_NAV_BREAKPOINT: f32 = 1_120.0;
+/// 保留该阈值供布局测试覆盖；统一导航不再收起为分类图标列。
+#[cfg(test)]
+pub(super) const COMPACT_NAV_BREAKPOINT: f32 = 980.0;
 
 /// 工具主结果区占可用内容高度的基准比例。
 #[cfg(test)]
@@ -25,7 +31,9 @@ pub(super) const RESULT_HEIGHT_RATIO: f32 = 0.58;
 /// 主内容列的最大宽度，适应宽屏与多列数据表格。
 pub(super) const MAX_CONTENT_WIDTH: f32 = 1600.0;
 
-/// 外壳在当前窗口宽度下应使用的导航模式。
+/// 外壳导航模式。
+///
+/// 设计稿要求始终保留一列带文字的工具导航，因此当前运行时固定使用宽导航。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum NavigationLayout {
     Wide,
@@ -33,20 +41,15 @@ pub(super) enum NavigationLayout {
 }
 
 /// 计算当前导航模式。
-pub(super) const fn navigation_layout(window_width: f32) -> NavigationLayout {
-    if window_width < COMPACT_NAV_BREAKPOINT {
-        NavigationLayout::Compact
-    } else {
-        NavigationLayout::Wide
-    }
+pub(super) const fn navigation_layout(_window_width: f32) -> NavigationLayout {
+    NavigationLayout::Wide
 }
 
 /// 计算外壳永久占用的横向宽度。
-#[cfg(test)]
 pub(super) const fn persistent_navigation_width(layout: NavigationLayout) -> f32 {
     match layout {
-        NavigationLayout::Wide => CATEGORY_RAIL_WIDTH + TOOL_NAV_WIDTH,
-        NavigationLayout::Compact => CATEGORY_RAIL_WIDTH,
+        NavigationLayout::Wide => UNIFIED_SIDEBAR_WIDTH,
+        NavigationLayout::Compact => COMPACT_SIDEBAR_WIDTH,
     }
 }
 
@@ -97,9 +100,10 @@ pub(super) const fn content_width(available_width: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        CATEGORY_RAIL_WIDTH, CATEGORY_ROW_HEIGHT, COMPACT_NAV_BREAKPOINT, MAX_CONTENT_WIDTH,
-        NavigationLayout, TOOL_NAV_WIDTH, TOOL_ROW_HEIGHT, content_track_width, content_width,
-        navigation_layout, persistent_navigation_width, result_height, tool_row_regions,
+        CATEGORY_ROW_HEIGHT, COMPACT_NAV_BREAKPOINT, COMPACT_SIDEBAR_WIDTH, HOME_ROW_HEIGHT,
+        MAX_CONTENT_WIDTH, NavigationLayout, TOOL_ROW_HEIGHT, UNIFIED_SIDEBAR_WIDTH,
+        content_track_width, content_width, navigation_layout, persistent_navigation_width,
+        result_height, tool_row_regions,
     };
 
     #[test]
@@ -111,18 +115,22 @@ mod tests {
 
     #[test]
     fn wide_and_compact_navigation_use_stable_tracks() {
-        assert_eq!(navigation_layout(980.0), NavigationLayout::Compact);
+        assert_eq!(navigation_layout(979.0), NavigationLayout::Wide);
         assert_eq!(
             navigation_layout(COMPACT_NAV_BREAKPOINT),
             NavigationLayout::Wide
         );
         assert_eq!(
+            navigation_layout(COMPACT_NAV_BREAKPOINT + 1.0),
+            NavigationLayout::Wide
+        );
+        assert_eq!(
             persistent_navigation_width(NavigationLayout::Wide),
-            CATEGORY_RAIL_WIDTH + TOOL_NAV_WIDTH
+            UNIFIED_SIDEBAR_WIDTH
         );
         assert_eq!(
             persistent_navigation_width(NavigationLayout::Compact),
-            CATEGORY_RAIL_WIDTH
+            COMPACT_SIDEBAR_WIDTH
         );
     }
 
@@ -135,16 +143,17 @@ mod tests {
 
     #[test]
     fn navigation_preserves_the_minimum_content_track() {
-        assert_eq!(content_track_width(980.0, NavigationLayout::Compact), 924.0);
-        assert_eq!(content_track_width(1_200.0, NavigationLayout::Wide), 912.0);
+        assert_eq!(content_track_width(980.0, NavigationLayout::Wide), 690.0);
+        assert_eq!(content_track_width(1_200.0, NavigationLayout::Wide), 910.0);
     }
 
     #[test]
     fn tool_row_regions_do_not_overlap() {
-        let (icon, text, badge) = tool_row_regions(TOOL_NAV_WIDTH - 24.0);
+        let (icon, text, badge) = tool_row_regions(UNIFIED_SIDEBAR_WIDTH - 24.0);
         assert!(icon.end <= text.start);
         assert!(text.end <= badge.start);
-        assert_eq!(CATEGORY_ROW_HEIGHT, 44.0);
-        assert_eq!(TOOL_ROW_HEIGHT, 40.0);
+        assert_eq!(CATEGORY_ROW_HEIGHT, 50.0);
+        assert_eq!(HOME_ROW_HEIGHT, 66.0);
+        assert_eq!(TOOL_ROW_HEIGHT, 48.0);
     }
 }

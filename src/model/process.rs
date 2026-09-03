@@ -11,6 +11,12 @@ pub struct ProcessSummary {
     pub name: String,
     /// 可执行文件的完整路径；权限不足或进程退出时为空。
     pub exe_path: Option<String>,
+    /// 进程令牌所属账户，格式为 `域\用户`；权限不足或进程退出时为 `None`。
+    pub owner: Option<String>,
+    /// 本地启动时间，格式为 `YYYY-MM-DD HH:MM:SS`；权限不足或进程退出时为 `None`。
+    pub started_at: Option<String>,
+    /// 快照时刻的可见运行状态。
+    pub run_state: ProcessRunState,
 }
 
 /// 进程详情页使用的完整进程信息。
@@ -28,10 +34,34 @@ pub struct ProcessInfo {
     pub command_line: Option<String>,
     /// 本地创建时间字符串，来源于 GetProcessTimes；无权限时为 `None`。
     pub started_at: Option<String>,
+    /// 进程令牌所属账户，格式为 `域\用户`；权限不足时为 `None`。
+    pub owner: Option<String>,
     /// 从最早父进程到当前进程的完整链路，包含当前进程。
     pub parent_chain: Vec<ProcessSummary>,
     /// 当前快照中父 PID 等于本进程 PID 的直接子进程，不递归展开。
     pub children: Vec<ProcessSummary>,
+}
+
+/// 进程在快照时刻的可见运行状态；权限不足时统一按“运行中”呈现。
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ProcessRunState {
+    /// 进程存在且至少有一个线程未处于挂起状态。
+    #[default]
+    Running,
+    /// 进程全部线程均为挂起状态，常见于 UWP 应用被系统冻结。
+    Suspended,
+    /// 无权限打开进程或读取线程状态，实际运行状态未知。
+    Unknown,
+}
+
+impl ProcessRunState {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Running => "运行中",
+            Self::Suspended => "已挂起",
+            Self::Unknown => "未知",
+        }
+    }
 }
 
 /// 进程关系页使用的单个树节点。命令行不放在快照中，避免刷新时批量读取敏感信息。
@@ -45,6 +75,12 @@ pub struct ProcessTreeNode {
     pub name: String,
     /// 当前快照中可见的直接子进程 PID，按稳定顺序排列。
     pub children: Vec<u32>,
+    /// 相邻两次快照之间的 CPU 占用百分比，已按逻辑处理器数归一；首次快照或无权限时为 `None`。
+    pub cpu_percent: Option<f32>,
+    /// 工作集大小，单位为字节，来源于 GetProcessMemoryInfo；无权限时为 `None`。
+    pub memory_bytes: Option<u64>,
+    /// 快照时刻的可见运行状态。
+    pub run_state: ProcessRunState,
 }
 
 /// 一次一致的全量进程关系快照。
@@ -71,6 +107,9 @@ impl ProcessInfo {
             pid: self.pid,
             name: self.name.clone(),
             exe_path: self.exe_path.clone(),
+            owner: self.owner.clone(),
+            started_at: self.started_at.clone(),
+            run_state: ProcessRunState::default(),
         }
     }
 }

@@ -26,8 +26,9 @@ pub use error::AppError;
 pub use file::FileLockResult;
 pub use mtr::{MtrConfig, MtrHopStats, MtrProgress, MtrResult};
 pub use network::{IpVersion, NetworkEndpoint, NetworkProtocol, TcpState};
-pub use ping::{PingAddressFamily, PingSample, PingSummary};
+pub use ping::{PingAddressFamily, PingConfig, PingProgress, PingSample, PingSummary};
 pub use process::{
-    ProcessCommandLine, ProcessInfo, ProcessSummary, ProcessTreeNode, ProcessTreeSnapshot,
+    ProcessCommandLine, ProcessInfo, ProcessRunState, ProcessSummary, ProcessTreeNode,
+    ProcessTreeSnapshot,
 };
-pub use tcp_probe::{TcpProbeAttempt, TcpProbeResult};
+pub use tcp_probe::{TcpProbeAttempt, TcpProbeConfig, TcpProbeProgress, TcpProbeResult};

@@ -30,7 +30,8 @@ use windows::{
 
 use crate::model::{
     AppError, DnsRecord, DnsRecordType, DnsResult, MtrConfig, MtrHopStats, MtrProgress, MtrResult,
-    PingAddressFamily, PingSample, PingSummary, TcpProbeAttempt, TcpProbeResult,
+    PingAddressFamily, PingConfig, PingProgress, PingSample, PingSummary, TcpProbeAttempt,
+    TcpProbeConfig, TcpProbeProgress, TcpProbeResult,
 };
 
 /// 使用 Windows 系统 DNS 查询记录，支持系统缓存和绕过缓存两种模式。
@@ -39,6 +40,7 @@ pub fn query_dns(
     record_type: DnsRecordType,
     bypass_cache: bool,
 ) -> Result<DnsResult, AppError> {
+    let started = Instant::now();
     let host = host.trim();
     if host.is_empty() {
         return Err(AppError::InvalidInput("主机名不能为空。".into()));
@@ -59,6 +61,7 @@ pub fn query_dns(
     Ok(DnsResult {
         host: host.to_owned(),
         records,
+        elapsed_ms: started.elapsed().as_millis() as u64,
     })
 }
 
@@ -251,6 +254,100 @@ where
         received,
         min_ms: values.iter().copied().reduce(f64::min),
         avg_ms,
+        max_ms: values.iter().copied().reduce(f64::max),
+    })
+}
+
+/// 执行支持取消和固定间隔的 Ping；持续模式只由取消令牌终止。
+pub fn ping_host_with_progress_cancellable<F>(
+    host: &str,
+    config: &PingConfig,
+    cancel: &AtomicBool,
+    mut on_progress: F,
+) -> Result<PingSummary, AppError>
+where
+    F: FnMut(PingProgress),
+{
+    config.validate().map_err(AppError::InvalidInput)?;
+    let host = host.trim();
+    if host.is_empty() {
+        return Err(AppError::InvalidInput("主机名不能为空。".into()));
+    }
+    let address = (host, 0)
+        .to_socket_addrs()
+        .map_err(|error| AppError::NameResolution(format!("{host}：{error}")))?
+        .find(|value| match config.family {
+            PingAddressFamily::Auto => true,
+            PingAddressFamily::V4 => value.is_ipv4(),
+            PingAddressFamily::V6 => value.is_ipv6(),
+        })
+        .ok_or_else(|| AppError::NameResolution("没有可用的地址族。".into()))?;
+
+    let mut samples = Vec::new();
+    while config.continuous || samples.len() < config.count as usize {
+        if cancel.load(Ordering::Acquire) {
+            break;
+        }
+        let started = Instant::now();
+        let result = ping_once(address, config.timeout_ms, config.payload_size);
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
+        let sample = match result {
+            Ok(ttl) => PingSample {
+                address: address.ip().to_string(),
+                elapsed_ms: Some(elapsed_ms),
+                ttl,
+                error: None,
+            },
+            Err(error) => PingSample {
+                address: address.ip().to_string(),
+                elapsed_ms: None,
+                ttl: None,
+                error: Some(error),
+            },
+        };
+        samples.push(sample.clone());
+        let values = samples
+            .iter()
+            .filter_map(|sample| sample.elapsed_ms)
+            .collect::<Vec<_>>();
+        let received = values.len() as u32;
+        on_progress(PingProgress {
+            host: host.to_owned(),
+            sample,
+            sent: samples.len() as u32,
+            received,
+            min_ms: values.iter().copied().reduce(f64::min),
+            avg_ms: (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64),
+            max_ms: values.iter().copied().reduce(f64::max),
+        });
+
+        if !config.continuous && samples.len() >= config.count as usize {
+            break;
+        }
+        let mut remaining = config.interval_ms;
+        while remaining > 0 {
+            if cancel.load(Ordering::Acquire) {
+                break;
+            }
+            let slice = remaining.min(50);
+            std::thread::sleep(Duration::from_millis(u64::from(slice)));
+            remaining -= slice;
+        }
+    }
+
+    let values = samples
+        .iter()
+        .filter_map(|sample| sample.elapsed_ms)
+        .collect::<Vec<_>>();
+    let sent = samples.len() as u32;
+    let received = values.len() as u32;
+    Ok(PingSummary {
+        host: host.to_owned(),
+        samples,
+        sent,
+        received,
+        min_ms: values.iter().copied().reduce(f64::min),
+        avg_ms: (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64),
         max_ms: values.iter().copied().reduce(f64::max),
     })
 }
@@ -650,13 +747,32 @@ where
 
 /// 在总截止时间内依次尝试解析出的每个 TCP 地址。
 pub fn tcp_probe(host: &str, port: u16, timeout_ms: u32) -> Result<TcpProbeResult, AppError> {
+    tcp_probe_filtered(host, port, timeout_ms, PingAddressFamily::Auto)
+}
+
+fn tcp_probe_filtered(
+    host: &str,
+    port: u16,
+    timeout_ms: u32,
+    family: PingAddressFamily,
+) -> Result<TcpProbeResult, AppError> {
     if port == 0 {
         return Err(AppError::InvalidInput("端口必须大于 0。".into()));
     }
     let mut addresses = (host, port)
         .to_socket_addrs()
         .map_err(|error| AppError::NameResolution(format!("{host}：{error}")))?
+        .filter(|address| match family {
+            PingAddressFamily::Auto => true,
+            PingAddressFamily::V4 => address.is_ipv4(),
+            PingAddressFamily::V6 => address.is_ipv6(),
+        })
         .collect::<Vec<_>>();
+    if addresses.is_empty() {
+        return Err(AppError::NameResolution(
+            "没有匹配地址族的目标地址。".into(),
+        ));
+    }
     addresses.sort_by_key(|address| address.is_ipv6());
     addresses.dedup();
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.clamp(100, 30_000) as u64);
@@ -685,6 +801,54 @@ pub fn tcp_probe(host: &str, port: u16, timeout_ms: u32) -> Result<TcpProbeResul
         });
         if success {
             break;
+        }
+    }
+    Ok(TcpProbeResult {
+        host: host.to_owned(),
+        port,
+        attempts,
+        success,
+    })
+}
+
+/// 按配置重复执行原始 TCP 握手探测，并在每个地址尝试后返回实时状态。
+pub fn tcp_probe_with_progress_cancellable<F>(
+    host: &str,
+    port: u16,
+    config: &TcpProbeConfig,
+    cancel: &AtomicBool,
+    mut on_progress: F,
+) -> Result<TcpProbeResult, AppError>
+where
+    F: FnMut(TcpProbeProgress),
+{
+    config.validate().map_err(AppError::InvalidInput)?;
+    let mut attempts = Vec::new();
+    let mut success = false;
+    for attempt_number in 1..=config.attempts {
+        if cancel.load(Ordering::Acquire) {
+            break;
+        }
+        let result = tcp_probe_filtered(host, port, config.timeout_ms, config.family)?;
+        success |= result.success;
+        for attempt in result.attempts {
+            on_progress(TcpProbeProgress {
+                attempt_number,
+                attempt: attempt.clone(),
+            });
+            attempts.push(attempt);
+        }
+        if attempt_number >= config.attempts {
+            break;
+        }
+        let mut remaining = config.interval_ms;
+        while remaining > 0 {
+            if cancel.load(Ordering::Acquire) {
+                break;
+            }
+            let slice = remaining.min(50);
+            std::thread::sleep(Duration::from_millis(u64::from(slice)));
+            remaining -= slice;
         }
     }
     Ok(TcpProbeResult {

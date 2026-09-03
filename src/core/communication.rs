@@ -24,6 +24,7 @@ use crate::{
 };
 
 const IO_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const PEER_UPDATE_INTERVAL: Duration = Duration::from_millis(100);
 const TCP_READ_BUFFER_BYTES: usize = 64 * 1024;
 const SERIAL_READ_BUFFER_BYTES: usize = 16 * 1024;
 const MAX_TCP_SERVER_CLIENTS: usize = 32;
@@ -32,6 +33,18 @@ struct SessionHandle {
     sender: mpsc::SyncSender<CommunicationCommand>,
     receiver: mpsc::Receiver<CommunicationEventEnvelope>,
     join: Option<JoinHandle<()>>,
+    summary: String,
+    state: CommunicationSessionState,
+    status_detail: String,
+}
+
+/// 首页使用的活动通信会话快照，仅保留当前进程内存中的连接摘要与状态。
+#[derive(Clone, Debug)]
+pub struct ActiveCommunicationSession {
+    pub kind: CommunicationKind,
+    pub summary: String,
+    pub state: CommunicationSessionState,
+    pub status_detail: String,
 }
 
 /// 每个工具至多拥有一个当前会话；替换会话时旧 generation 的事件会在应用外壳路由前被丢弃。
@@ -61,6 +74,7 @@ impl CommunicationDispatcher {
     pub fn start(&mut self, config: CommunicationConfig) -> Result<u64, AppError> {
         config.validate().map_err(AppError::InvalidInput)?;
         let kind = config.kind();
+        let summary = config.session_summary();
         self.stop_current(kind);
         self.reap_retired();
 
@@ -82,6 +96,9 @@ impl CommunicationDispatcher {
                 sender: command_sender,
                 receiver: event_receiver,
                 join: Some(join),
+                summary,
+                state: CommunicationSessionState::Starting,
+                status_detail: "正在启动会话".into(),
             },
         );
         Ok(generation)
@@ -126,6 +143,7 @@ impl CommunicationDispatcher {
             })
     }
 
+    #[cfg(test)]
     pub fn accepts(&self, envelope: &CommunicationEventEnvelope) -> bool {
         self.generations.get(&envelope.kind).copied() == Some(envelope.generation)
     }
@@ -133,14 +151,45 @@ impl CommunicationDispatcher {
     pub fn drain_events(&mut self) -> Vec<CommunicationEventEnvelope> {
         self.reap_retired();
         let mut events = Vec::new();
-        for session in self.sessions.values() {
+        let generations = &self.generations;
+        for session in self.sessions.values_mut() {
             while let Ok(event) = session.receiver.try_recv() {
-                if self.accepts(&event) {
+                if generations.get(&event.kind).copied() == Some(event.generation) {
+                    if let CommunicationEvent::Status { state, detail } = &event.event {
+                        session.state = *state;
+                        session.status_detail = detail.clone();
+                    }
                     events.push(event);
                 }
             }
         }
         events
+    }
+
+    /// 返回仍在运行的通信会话及其最新状态快照。
+    pub fn active_sessions(&self) -> Vec<ActiveCommunicationSession> {
+        let mut sessions = self
+            .sessions
+            .iter()
+            .filter(|(_, session)| {
+                session
+                    .join
+                    .as_ref()
+                    .is_some_and(|join| !join.is_finished())
+                    && !matches!(
+                        session.state,
+                        CommunicationSessionState::Stopped | CommunicationSessionState::Failed
+                    )
+            })
+            .map(|(kind, session)| ActiveCommunicationSession {
+                kind: *kind,
+                summary: session.summary.clone(),
+                state: session.state,
+                status_detail: session.status_detail.clone(),
+            })
+            .collect::<Vec<_>>();
+        sessions.sort_by_key(|session| session.kind.tool_id());
+        sessions
     }
 
     fn stop_current(&mut self, kind: CommunicationKind) {
@@ -173,6 +222,7 @@ impl Drop for CommunicationDispatcher {
                 sender,
                 receiver,
                 join,
+                ..
             } = session;
             let _ = sender.try_send(CommunicationCommand::Stop);
             drop(sender);
@@ -448,6 +498,7 @@ fn handle_tcp_client_commands(
                     None,
                 );
             }
+            Ok(CommunicationCommand::SetRts(_) | CommunicationCommand::SetDtr(_)) => {}
             Err(mpsc::TryRecvError::Empty) => return true,
             Err(mpsc::TryRecvError::Disconnected) => return false,
         }
@@ -497,6 +548,8 @@ fn run_tcp_server(
     let mut clients = Vec::<TcpConnection>::new();
     let mut next_peer_id = 1_u64;
     let mut read_buffer = vec![0_u8; TCP_READ_BUFFER_BYTES];
+    let mut peer_stats_dirty = false;
+    let mut last_peer_update = Instant::now();
     let mut running = true;
     while running {
         loop {
@@ -527,6 +580,8 @@ fn run_tcp_server(
                     ));
                     next_peer_id = next_peer_id.saturating_add(1);
                     emit_peers(&clients, emitter);
+                    last_peer_update = Instant::now();
+                    peer_stats_dirty = false;
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) => {
@@ -554,6 +609,7 @@ fn run_tcp_server(
                         break;
                     }
                 }
+                Ok(CommunicationCommand::SetRts(_) | CommunicationCommand::SetDtr(_)) => {}
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     running = false;
@@ -564,24 +620,33 @@ fn run_tcp_server(
 
         let mut disconnected = Vec::new();
         for (index, client) in clients.iter_mut().enumerate() {
-            if let Err(error) = client.flush_pending() {
-                emitter.record(
-                    CommunicationDirection::Status,
-                    &client.endpoint,
-                    Vec::new(),
-                    Some(format!("TCP 写入失败：{error}")),
-                );
-                disconnected.push(index);
-                continue;
+            match client.flush_pending() {
+                Ok(written) => {
+                    peer_stats_dirty |= written > 0;
+                }
+                Err(error) => {
+                    emitter.record(
+                        CommunicationDirection::Status,
+                        &client.endpoint,
+                        Vec::new(),
+                        Some(format!("TCP 写入失败：{error}")),
+                    );
+                    disconnected.push(index);
+                    continue;
+                }
             }
             match client.stream.read(&mut read_buffer) {
                 Ok(0) => disconnected.push(index),
-                Ok(count) => emitter.record(
-                    CommunicationDirection::Incoming,
-                    &client.endpoint,
-                    read_buffer[..count].to_vec(),
-                    None,
-                ),
+                Ok(count) => {
+                    client.received_bytes = client.received_bytes.saturating_add(count as u64);
+                    peer_stats_dirty = true;
+                    emitter.record(
+                        CommunicationDirection::Incoming,
+                        &client.endpoint,
+                        read_buffer[..count].to_vec(),
+                        None,
+                    );
+                }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
                 Err(error) => {
                     emitter.record(
@@ -601,6 +666,12 @@ fn run_tcp_server(
                 clients.remove(index);
             }
             emit_peers(&clients, emitter);
+            last_peer_update = Instant::now();
+            peer_stats_dirty = false;
+        } else if peer_stats_dirty && last_peer_update.elapsed() >= PEER_UPDATE_INTERVAL {
+            emit_peers(&clients, emitter);
+            last_peer_update = Instant::now();
+            peer_stats_dirty = false;
         }
         emitter.flush(false);
         thread::sleep(IO_POLL_INTERVAL);
@@ -655,6 +726,9 @@ struct TcpConnection {
     id: u64,
     stream: TcpStream,
     endpoint: String,
+    connected_at: String,
+    received_bytes: u64,
+    sent_bytes: u64,
     pending: VecDeque<u8>,
 }
 
@@ -664,6 +738,9 @@ impl TcpConnection {
             id,
             stream,
             endpoint,
+            connected_at: local_time_hms_millis(),
+            received_bytes: 0,
+            sent_bytes: 0,
             pending: VecDeque::new(),
         }
     }
@@ -679,19 +756,24 @@ impl TcpConnection {
         Ok(())
     }
 
-    fn flush_pending(&mut self) -> io::Result<()> {
+    fn flush_pending(&mut self) -> io::Result<usize> {
+        let mut written_total = 0_usize;
         while !self.pending.is_empty() {
             let contiguous = self.pending.make_contiguous();
             match self.stream.write(contiguous) {
                 Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero, "写入返回 0 字节")),
                 Ok(count) => {
                     self.pending.drain(..count);
+                    written_total = written_total.saturating_add(count);
+                    self.sent_bytes = self.sent_bytes.saturating_add(count as u64);
                 }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    return Ok(written_total);
+                }
                 Err(error) => return Err(error),
             }
         }
-        Ok(())
+        Ok(written_total)
     }
 }
 
@@ -702,6 +784,9 @@ fn emit_peers(clients: &[TcpConnection], emitter: &mut EventEmitter) {
             .map(|client| CommunicationPeer {
                 id: client.id,
                 endpoint: client.endpoint.clone(),
+                connected_at: client.connected_at.clone(),
+                received_bytes: client.received_bytes,
+                sent_bytes: client.sent_bytes,
             })
             .collect(),
     );
@@ -830,6 +915,7 @@ fn run_udp(
                         ),
                     }
                 }
+                Ok(CommunicationCommand::SetRts(_) | CommunicationCommand::SetDtr(_)) => {}
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     running = false;
@@ -942,6 +1028,36 @@ fn run_serial(
                         &config.port_name,
                         payload,
                         None,
+                    );
+                }
+                Ok(CommunicationCommand::SetRts(enabled)) => {
+                    if let Err(error) = port.write_request_to_send(enabled) {
+                        emitter.status(
+                            CommunicationSessionState::Failed,
+                            format!("设置 RTS 失败或设备已断开：{error}"),
+                        );
+                        return;
+                    }
+                    emitter.record(
+                        CommunicationDirection::Status,
+                        &config.port_name,
+                        Vec::new(),
+                        Some(format!("RTS 已{}", if enabled { "置位" } else { "复位" })),
+                    );
+                }
+                Ok(CommunicationCommand::SetDtr(enabled)) => {
+                    if let Err(error) = port.write_data_terminal_ready(enabled) {
+                        emitter.status(
+                            CommunicationSessionState::Failed,
+                            format!("设置 DTR 失败或设备已断开：{error}"),
+                        );
+                        return;
+                    }
+                    emitter.record(
+                        CommunicationDirection::Status,
+                        &config.port_name,
+                        Vec::new(),
+                        Some(format!("DTR 已{}", if enabled { "置位" } else { "复位" })),
                     );
                 }
                 Err(mpsc::TryRecvError::Empty) => break,

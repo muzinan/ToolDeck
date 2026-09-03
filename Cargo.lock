@@ -2900,12 +2900,13 @@ dependencies = [
 
 [[package]]
 name = "windows-toolbox"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "directories",
  "eframe",
  "embed-resource",
+ "image",
  "serde",
  "serde_json",
  "serialport",

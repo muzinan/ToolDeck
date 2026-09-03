@@ -14,7 +14,7 @@ use crate::{
         invocation::{ToolInvocation, ToolPayload},
         worker::TaskResult,
     },
-    model::{AppError, IpVersion, NetworkEndpoint, NetworkProtocol, TcpState},
+    model::{AppError, IpVersion, NetworkEndpoint, NetworkProtocol, ProcessSummary, TcpState},
     platform::windows::local_time_hms,
     tools::{
         ToolModule, ToolUiContext,
@@ -31,14 +31,16 @@ enum RefreshInterval {
     #[default]
     TwoSeconds,
     FiveSeconds,
+    TenSeconds,
 }
 
 impl RefreshInterval {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::Off,
         Self::OneSecond,
         Self::TwoSeconds,
         Self::FiveSeconds,
+        Self::TenSeconds,
     ];
 
     fn label(self) -> &'static str {
@@ -47,6 +49,7 @@ impl RefreshInterval {
             Self::OneSecond => "1 秒",
             Self::TwoSeconds => "2 秒",
             Self::FiveSeconds => "5 秒",
+            Self::TenSeconds => "10 秒",
         }
     }
 
@@ -56,25 +59,29 @@ impl RefreshInterval {
             Self::OneSecond => Some(Duration::from_secs(1)),
             Self::TwoSeconds => Some(Duration::from_secs(2)),
             Self::FiveSeconds => Some(Duration::from_secs(5)),
+            Self::TenSeconds => Some(Duration::from_secs(10)),
         }
     }
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum SortColumn {
+    #[default]
+    None,
     Protocol,
     LocalAddress,
     RemoteAddress,
     State,
-    #[default]
     Pid,
     Process,
 }
 
 #[derive(Default)]
 pub struct PortInspectorTool {
-    filter: String,
+    address_filter: String,
     exact_port: String,
+    pid_filter: String,
+    process_filter: String,
     exact_pid: Option<u32>,
     protocol: Option<NetworkProtocol>,
     ip_version: Option<IpVersion>,
@@ -82,11 +89,16 @@ pub struct PortInspectorTool {
     sort_column: SortColumn,
     sort_ascending: bool,
     interval: RefreshInterval,
+    paused: bool,
     endpoints: Vec<NetworkEndpoint>,
     error: Option<AppError>,
     busy: bool,
     last_refresh: Option<Instant>,
     last_refresh_label: Option<String>,
+    review_seeded: bool,
+    selected_endpoint: Option<String>,
+    selected_process_pid: Option<u32>,
+    selected_process: Option<Result<ProcessSummary, AppError>>,
 }
 
 impl ToolModule for PortInspectorTool {
@@ -95,7 +107,7 @@ impl ToolModule for PortInspectorTool {
             id: "port-inspector",
             name: "端口占用",
             description: "检查 TCP 和 UDP 端口、连接状态与所属进程",
-            category: ToolCategory::Network,
+            category: ToolCategory::Diagnostic,
             icon: ToolIcon::Network,
             keywords: &[
                 "port", "tcp", "udp", "listen", "socket", "network", "端口", "占用", "网络",
@@ -103,63 +115,96 @@ impl ToolModule for PortInspectorTool {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _context: ToolUiContext) -> Vec<AppAction> {
+    fn ui(&mut self, ui: &mut egui::Ui, context: ToolUiContext) -> Vec<AppAction> {
+        if context.review_mode && !self.review_seeded {
+            self.seed_review();
+        }
         let mut actions = Vec::new();
         let palette = ui::palette_for_ui(ui);
-        heading(ui, "端口监控", "查看 TCP、UDP 端点、连接状态与所属进程");
+        heading(ui, "端口占用", "查看本机 TCP 与 UDP 端点及所属进程");
         ui.add_space(ui::SPACE_16);
 
         ui::card(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.add_sized(
-                    [220.0, ui::CONTROL_HEIGHT],
-                    ui::text_input(&mut self.filter, "搜索地址、进程或 PID"),
-                );
-                ui.add_sized(
-                    [110.0, ui::CONTROL_HEIGHT],
-                    ui::text_input(&mut self.exact_port, "精确端口"),
-                );
-                ui.separator();
-                egui::ComboBox::from_id_salt("port-protocol")
-                    .selected_text(self.protocol.map_or("全部协议", NetworkProtocol::label))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.protocol, None, "全部协议");
-                        ui.selectable_value(&mut self.protocol, Some(NetworkProtocol::Tcp), "TCP");
-                        ui.selectable_value(&mut self.protocol, Some(NetworkProtocol::Udp), "UDP");
-                    });
-                egui::ComboBox::from_id_salt("port-ip-version")
-                    .selected_text(self.ip_version.map_or("全部 IP", IpVersion::label))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.ip_version, None, "全部 IP");
-                        ui.selectable_value(&mut self.ip_version, Some(IpVersion::V4), "IPv4");
-                        ui.selectable_value(&mut self.ip_version, Some(IpVersion::V6), "IPv6");
-                    });
-                egui::ComboBox::from_id_salt("port-state")
-                    .selected_text(self.state.map_or("全部状态", TcpState::label))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.state, None, "全部状态");
-                        for state in TcpState::ALL {
-                            ui.selectable_value(&mut self.state, Some(state), state.label());
+            let compact_controls = ui.available_width() < 1_000.0;
+            let segment_width = if compact_controls { 56.0 } else { 64.0 };
+            let address_width = if compact_controls { 135.0 } else { 170.0 };
+            let port_width = if compact_controls { 90.0 } else { 118.0 };
+            let pid_width = if compact_controls { 90.0 } else { 118.0 };
+            let process_width = if compact_controls { 140.0 } else { 176.0 };
+            let field_gap = if compact_controls { ui::SPACE_8 } else { ui::SPACE_12 };
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        for (label, value) in [
+                            ("全部", None),
+                            ("TCP", Some(NetworkProtocol::Tcp)),
+                            ("UDP", Some(NetworkProtocol::Udp)),
+                        ] {
+                            ui.add_sized(
+                                [segment_width, ui::CONTROL_HEIGHT],
+                                egui::Button::selectable(self.protocol == value, label),
+                            )
+                            .clicked()
+                            .then(|| self.protocol = value);
                         }
                     });
-                egui::ComboBox::from_id_salt("port-refresh")
-                    .selected_text(format!("自动刷新：{}", self.interval.label()))
-                    .show_ui(ui, |ui| {
-                        for interval in RefreshInterval::ALL {
-                            ui.selectable_value(&mut self.interval, interval, interval.label());
-                        }
-                    });
-                if ui::primary_button(
+                });
+                ui.add_space(field_gap);
+                render_filter_input(
                     ui,
-                    if self.busy {
-                        "重新查询"
-                    } else {
-                        "立即刷新"
-                    },
-                )
-                .clicked()
-                {
-                    actions.push(AppAction::RefreshPorts);
+                    "地址",
+                    &mut self.address_filter,
+                    "例如：127.0.0.1",
+                    address_width,
+                );
+                ui.add_space(field_gap);
+                render_filter_input(ui, "端口", &mut self.exact_port, "例如：8080", port_width);
+                ui.add_space(field_gap);
+                render_filter_input(ui, "PID", &mut self.pid_filter, "例如：1234", pid_width);
+                ui.add_space(field_gap);
+                render_filter_input(
+                    ui,
+                    "进程",
+                    &mut self.process_filter,
+                    "例如：chrome.exe",
+                    process_width,
+                );
+                ui.add_space(field_gap);
+                ui.vertical(|ui| {
+                    ui.add_space(10.0);
+                    let query_width = if compact_controls { 70.0 } else { 76.0 };
+                    if ui::primary_button_sized(ui, "查询", [query_width, ui::CONTROL_HEIGHT])
+                        .clicked()
+                    {
+                        actions.push(AppAction::RefreshPorts);
+                    }
+                });
+            });
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.label("自动刷新");
+                for interval in RefreshInterval::ALL {
+                    ui.add_sized(
+                        [60.0, ui::CONTROL_HEIGHT],
+                        egui::Button::selectable(self.interval == interval, interval.label()),
+                    )
+                    .clicked()
+                    .then(|| self.interval = interval);
+                }
+                let action_width = 176.0;
+                ui.add_space((ui.available_width() - action_width).max(0.0));
+                if ui::secondary_button(ui, if self.paused { "继续" } else { "暂停" }).clicked() {
+                    self.paused = !self.paused;
+                }
+                ui.add_space(ui::SPACE_8);
+                if ui::secondary_button(ui, "导出 CSV").clicked() {
+                    let rows = self.filtered_rows();
+                    actions.push(AppAction::ExportPortsCsv {
+                        content: endpoints_csv(&rows),
+                    });
                 }
             });
             if let Some(pid) = self.exact_pid {
@@ -221,17 +266,25 @@ impl ToolModule for PortInspectorTool {
     }
 
     fn handle_task_result(&mut self, result: TaskResult) {
-        if let TaskResult::Ports(result) = result {
-            self.busy = false;
-            self.last_refresh = Some(Instant::now());
-            self.last_refresh_label = Some(local_time_hms());
-            match result {
-                Ok(endpoints) => {
-                    self.endpoints = endpoints;
-                    self.error = None;
+        match result {
+            TaskResult::Ports(result) => {
+                self.busy = false;
+                self.last_refresh = Some(Instant::now());
+                self.last_refresh_label = Some(local_time_hms());
+                match result {
+                    Ok(endpoints) => {
+                        self.endpoints = endpoints;
+                        self.error = None;
+                    }
+                    Err(error) => self.error = Some(error),
                 }
-                Err(error) => self.error = Some(error),
             }
+            TaskResult::PortProcessDetails { pid, result }
+                if self.selected_process_pid == Some(pid) =>
+            {
+                self.selected_process = Some(result);
+            }
+            _ => {}
         }
     }
 
@@ -248,27 +301,198 @@ impl ToolModule for PortInspectorTool {
 }
 
 impl PortInspectorTool {
+    fn seed_review(&mut self) {
+        self.review_seeded = true;
+        self.endpoints.clear();
+        self.endpoints.extend([
+            review_endpoint(
+                NetworkProtocol::Tcp,
+                IpVersion::V4,
+                "0.0.0.0",
+                80,
+                "0.0.0.0",
+                Some(0),
+                Some(TcpState::Listen),
+                1234,
+                "nginx.exe",
+            ),
+            review_endpoint(
+                NetworkProtocol::Tcp,
+                IpVersion::V4,
+                "127.0.0.1",
+                8080,
+                "127.0.0.1",
+                Some(52314),
+                Some(TcpState::Established),
+                5678,
+                "ToolDeck.exe",
+            ),
+            review_endpoint(
+                NetworkProtocol::Tcp,
+                IpVersion::V4,
+                "127.0.0.1",
+                9000,
+                "127.0.0.1",
+                Some(52315),
+                Some(TcpState::Established),
+                2222,
+                "chrome.exe",
+            ),
+            review_endpoint(
+                NetworkProtocol::Tcp,
+                IpVersion::V4,
+                "127.0.0.1",
+                3306,
+                "127.0.0.1",
+                Some(52316),
+                Some(TcpState::Established),
+                4180,
+                "mysqld.exe",
+            ),
+            review_endpoint(
+                NetworkProtocol::Tcp,
+                IpVersion::V6,
+                "::1",
+                5432,
+                "::1",
+                Some(52317),
+                Some(TcpState::Established),
+                3360,
+                "postgres.exe",
+            ),
+            review_endpoint(
+                NetworkProtocol::Tcp,
+                IpVersion::V4,
+                "0.0.0.0",
+                22,
+                "0.0.0.0",
+                Some(0),
+                Some(TcpState::Listen),
+                1000,
+                "sshd.exe",
+            ),
+            review_endpoint(
+                NetworkProtocol::Udp,
+                IpVersion::V4,
+                "0.0.0.0",
+                53,
+                "0.0.0.0",
+                Some(0),
+                None,
+                1234,
+                "dns.exe",
+            ),
+            review_endpoint(
+                NetworkProtocol::Udp,
+                IpVersion::V4,
+                "127.0.0.1",
+                123,
+                "0.0.0.0",
+                Some(0),
+                None,
+                1560,
+                "w32time.exe",
+            ),
+            review_endpoint(
+                NetworkProtocol::Udp,
+                IpVersion::V6,
+                "::1",
+                5333,
+                "0.0.0.0",
+                Some(0),
+                None,
+                3456,
+                "svchost.exe",
+            ),
+            review_endpoint(
+                NetworkProtocol::Tcp,
+                IpVersion::V4,
+                "127.0.0.1",
+                6379,
+                "127.0.0.1",
+                Some(52318),
+                Some(TcpState::Established),
+                2890,
+                "redis-server.exe",
+            ),
+        ]);
+        for index in 0..16_u16 {
+            self.endpoints.push(review_endpoint(
+                NetworkProtocol::Tcp,
+                IpVersion::V4,
+                "0.0.0.0",
+                10000 + index,
+                "0.0.0.0",
+                Some(0),
+                Some(TcpState::Listen),
+                3000 + u32::from(index),
+                &format!("service-{index}.exe"),
+            ));
+        }
+        self.endpoints.push(review_endpoint(
+            NetworkProtocol::Tcp,
+            IpVersion::V4,
+            "127.0.0.1",
+            6380,
+            "127.0.0.1",
+            Some(52319),
+            Some(TcpState::Established),
+            2891,
+            "redis-monitor.exe",
+        ));
+        for index in 0..9_u16 {
+            self.endpoints.push(review_endpoint(
+                NetworkProtocol::Udp,
+                IpVersion::V4,
+                "127.0.0.1",
+                9100 + index,
+                "0.0.0.0",
+                Some(0),
+                None,
+                4000 + u32::from(index),
+                &format!("udp-{index}.exe"),
+            ));
+        }
+        self.last_refresh = Some(Instant::now());
+        self.last_refresh_label = Some("14:25:10".into());
+        if let Some(endpoint) = self.endpoints.get(1) {
+            self.selected_endpoint = Some(endpoint_report_line(endpoint));
+            self.selected_process_pid = Some(endpoint.pid);
+            self.selected_process = Some(Ok(ProcessSummary {
+                pid: endpoint.pid,
+                name: endpoint.process_name.clone(),
+                exe_path: Some(r"C:\Program Files\ToolDeck\ToolDeck.exe".into()),
+                owner: Some("DESKTOP\\chen".into()),
+                started_at: Some("2025-05-20 11:45:01".into()),
+                ..Default::default()
+            }));
+        }
+    }
+
     pub fn due_refresh(&self, now: Instant) -> bool {
         self.interval.duration().is_some_and(|interval| {
             !self.busy
+                && !self.paused
                 && self
                     .last_refresh
                     .is_none_or(|last| now.duration_since(last) >= interval)
         })
     }
 
-    fn render_table(&mut self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
-        let palette = ui::palette_for_ui(ui);
-        let filter = self.filter.trim().to_lowercase();
+    fn filtered_rows(&self) -> Vec<&NetworkEndpoint> {
+        let address = self.address_filter.trim().to_lowercase();
+        let process = self.process_filter.trim().to_lowercase();
+        let pid = self.pid_filter.trim();
         let exact_port = self
             .exact_port
             .trim()
             .parse::<u16>()
             .ok()
             .filter(|port| *port > 0);
-        let invalid_port = !self.exact_port.trim().is_empty() && exact_port.is_none();
-        let mut rows: Vec<_> = self
-            .endpoints
+        if !self.exact_port.trim().is_empty() && exact_port.is_none() {
+            return Vec::new();
+        }
+        self.endpoints
             .iter()
             .filter(|endpoint| {
                 self.protocol
@@ -284,13 +508,40 @@ impl PortInspectorTool {
                     endpoint.local_port == port || endpoint.remote_port == Some(port)
                 })
             })
-            .filter(|endpoint| self.exact_pid.is_none_or(|pid| endpoint.pid == pid))
-            .filter(|endpoint| endpoint_matches(endpoint, &filter))
-            .collect();
-        if invalid_port {
-            rows.clear();
+            .filter(|endpoint| self.exact_pid.is_none_or(|value| endpoint.pid == value))
+            .filter(|endpoint| {
+                address.is_empty()
+                    || endpoint.local_address.to_lowercase().contains(&address)
+                    || endpoint.remote_address.to_lowercase().contains(&address)
+            })
+            .filter(|endpoint| pid.is_empty() || endpoint.pid.to_string().contains(pid))
+            .filter(|endpoint| {
+                process.is_empty() || endpoint.process_name.to_lowercase().contains(&process)
+            })
+            .collect()
+    }
+
+    fn render_table(&mut self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
+        let invalid_port = !self.exact_port.trim().is_empty()
+            && self
+                .exact_port
+                .trim()
+                .parse::<u16>()
+                .ok()
+                .filter(|port| *port > 0)
+                .is_none();
+        let mut sort_column = self.sort_column;
+        let mut sort_ascending = self.sort_ascending;
+        let mut selected_endpoint = self.selected_endpoint.clone();
+        let mut rows = self.filtered_rows();
+        sort_endpoints(&mut rows, sort_column, sort_ascending);
+        if selected_endpoint.as_ref().is_none_or(|selected| {
+            !rows
+                .iter()
+                .any(|row| endpoint_report_line(row) == *selected)
+        }) {
+            selected_endpoint = rows.first().map(|row| endpoint_report_line(row));
         }
-        sort_endpoints(&mut rows, self.sort_column, self.sort_ascending);
 
         let listening_count = rows
             .iter()
@@ -300,70 +551,32 @@ impl PortInspectorTool {
             .iter()
             .filter(|r| r.state == Some(TcpState::Established))
             .count();
+        let tcp_count = rows
+            .iter()
+            .filter(|row| row.protocol == NetworkProtocol::Tcp)
+            .count();
+        let udp_count = rows
+            .iter()
+            .filter(|row| row.protocol == NetworkProtocol::Udp)
+            .count();
 
-        // 顶部网络端点指标磁贴
-        let tile_w = ((ui.available_width() - ui::SPACE_12 * 2.0) / 3.0).max(140.0);
-        ui.horizontal_wrapped(|ui| {
-            ui::metric_tile(
-                ui,
-                tile_w,
-                "匹配端点总数",
-                &rows.len().to_string(),
-                "个端点",
-                palette.accent,
-            );
-            ui::metric_tile(
-                ui,
-                tile_w,
-                "监听状态 (LISTEN)",
-                &listening_count.to_string(),
-                "个端口",
-                palette.success_text,
-            );
-            ui::metric_tile(
-                ui,
-                tile_w,
-                "已连接 (ESTABLISHED)",
-                &established_count.to_string(),
-                "条活动连接",
-                palette.accent_secondary,
-            );
-        });
-        ui.add_space(ui::SPACE_12);
-
-        ui.horizontal(|ui| {
-            let refresh = self
-                .last_refresh_label
-                .as_deref()
-                .map_or_else(|| "尚未刷新".to_owned(), |time| format!("更新于 {time}"));
-            ui.label(
-                RichText::new(format!(
-                    "已捕获 {} 条网络套接字记录 · {}",
-                    rows.len(),
-                    refresh
-                ))
-                .size(13.0)
-                .color(palette.weak),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui::small_action_button(ui, "导出 CSV").clicked() {
-                    actions.push(AppAction::ExportPortsCsv {
-                        content: endpoints_csv(&rows),
-                    });
-                }
-                if ui::small_action_button(ui, "复制 CSV").clicked() {
-                    actions.push(AppAction::CopyText(endpoints_csv(&rows)));
-                }
-            });
-        });
+        render_port_statistics(
+            ui,
+            [
+                ("监听", listening_count),
+                ("已建立", established_count),
+                ("TCP", tcp_count),
+                ("UDP", udp_count),
+            ],
+        );
         if invalid_port {
-            ui.add_space(ui::SPACE_4);
+            ui.add_space(ui::SPACE_8);
             ui.label(RichText::new("精确端口必须是 1 到 65535 的整数").color(ui::danger_text(ui)));
         }
-        ui.add_space(ui::SPACE_8);
-        let table_height = (ui.ctx().screen_rect().height() * 0.58).clamp(420.0, 950.0);
-        ui::card(ui, |ui| {
-            egui::ScrollArea::both()
+        ui.add_space(ui::SPACE_12);
+        let table_height = (ui.ctx().screen_rect().height() * 0.40).clamp(360.0, 450.0);
+        ui::table_card(ui, |ui| {
+            egui::ScrollArea::vertical()
                 .id_salt("port-inspector-table-scroll")
                 .max_height(table_height)
                 .min_scrolled_height(table_height)
@@ -374,11 +587,123 @@ impl PortInspectorTool {
                         ui,
                         &rows,
                         actions,
-                        &mut self.sort_column,
-                        &mut self.sort_ascending,
+                        &mut sort_column,
+                        &mut sort_ascending,
+                        &mut selected_endpoint,
                     )
                 });
         });
+        let selected_pid = rows.iter().find(|row| {
+            selected_endpoint
+                .as_ref()
+                .is_some_and(|selected| endpoint_report_line(row) == *selected)
+        });
+        if let Some(endpoint) = selected_pid {
+            ui.add_space(ui::SPACE_12);
+            let process = (self.selected_process_pid == Some(endpoint.pid))
+                .then_some(self.selected_process.as_ref())
+                .flatten();
+            render_selected_endpoint(ui, endpoint, process, actions);
+        }
+        let selected_pid = selected_pid.map(|endpoint| endpoint.pid);
+        drop(rows);
+        if self.selected_process_pid != selected_pid {
+            self.selected_process_pid = selected_pid;
+            self.selected_process = None;
+            if let Some(pid) = selected_pid {
+                actions.push(AppAction::LoadPortProcessDetails { pid });
+            }
+        }
+        self.sort_column = sort_column;
+        self.sort_ascending = sort_ascending;
+        self.selected_endpoint = selected_endpoint;
+    }
+}
+
+/// 绘制筛选项的标签与输入框，保证所有字段在同一标签基线和控件基线上对齐。
+fn render_filter_input(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut String,
+    hint: &str,
+    width: f32,
+) {
+    ui.vertical(|ui| {
+        ui.label(RichText::new(label).size(13.0));
+        ui.add_space(4.0);
+        ui.add_sized([width, ui::CONTROL_HEIGHT], ui::text_input(value, hint));
+    });
+}
+
+/// 绘制端口页的单一统计条，使端点统计保持连续而非拆分为独立信息卡。
+fn render_port_statistics(ui: &mut egui::Ui, statistics: [(&str, usize); 4]) {
+    const HEIGHT: f32 = 78.0;
+    let palette = ui::palette_for_ui(ui);
+    let (response, painter) = ui.allocate_painter(
+        egui::vec2(ui.available_width(), HEIGHT),
+        egui::Sense::hover(),
+    );
+    let rect = response.rect;
+    painter.rect(
+        rect,
+        egui::CornerRadius::same(6),
+        palette.surface,
+        egui::Stroke::new(1.0_f32, palette.border),
+        egui::StrokeKind::Middle,
+    );
+
+    let cell_width = rect.width() / statistics.len() as f32;
+    for (index, (label, value)) in statistics.into_iter().enumerate() {
+        let cell_left = rect.left() + cell_width * index as f32;
+        let cell_center = cell_left + cell_width * 0.5;
+        if index > 0 {
+            painter.line_segment(
+                [
+                    egui::pos2(cell_left, rect.top() + 8.0),
+                    egui::pos2(cell_left, rect.bottom() - 8.0),
+                ],
+                egui::Stroke::new(1.0_f32, palette.border),
+            );
+        }
+        painter.text(
+            egui::pos2(cell_center, rect.top() + 15.0),
+            egui::Align2::CENTER_TOP,
+            label,
+            egui::FontId::proportional(13.0),
+            palette.text,
+        );
+        painter.text(
+            egui::pos2(cell_center, rect.top() + 40.0),
+            egui::Align2::CENTER_CENTER,
+            value.to_string(),
+            egui::FontId::monospace(28.0),
+            palette.accent,
+        );
+    }
+}
+
+/// 构造视觉审查专用端点，不参与运行时的系统端口读取和过滤数据来源。
+fn review_endpoint(
+    protocol: NetworkProtocol,
+    ip_version: IpVersion,
+    local_address: &str,
+    local_port: u16,
+    remote_address: &str,
+    remote_port: Option<u16>,
+    state: Option<TcpState>,
+    pid: u32,
+    process_name: &str,
+) -> NetworkEndpoint {
+    NetworkEndpoint {
+        protocol,
+        ip_version,
+        local_address: local_address.into(),
+        local_port,
+        remote_address: remote_address.into(),
+        remote_port,
+        state,
+        pid,
+        process_name: process_name.into(),
     }
 }
 
@@ -388,35 +713,47 @@ fn render_port_rows(
     actions: &mut Vec<AppAction>,
     sort_column: &mut SortColumn,
     sort_ascending: &mut bool,
+    selected_endpoint: &mut Option<String>,
 ) {
-    const COLUMN_WIDTHS: [f32; 7] = [92.0, 290.0, 290.0, 112.0, 84.0, 220.0, 78.0];
-    const ROW_HEIGHT: f32 = 36.0;
-    let table_width: f32 = COLUMN_WIDTHS.iter().sum();
-    let header = allocate_table_row(ui, table_width, ROW_HEIGHT, egui::Sense::hover());
+    const COLUMN_WIDTHS: [f32; 8] = [70.0, 160.0, 88.0, 160.0, 88.0, 150.0, 78.0, 180.0];
+    const HEADER_HEIGHT: f32 = 40.0;
+    const ROW_HEIGHT: f32 = 37.0;
+    let item_spacing = ui.spacing().item_spacing;
+    ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+    let table_width = ui.available_width();
+    let header = allocate_table_row(ui, table_width, HEADER_HEIGHT, egui::Sense::hover());
     let palette = ui::palette_for_ui(ui);
     header.painter.rect_filled(
         header.response.rect,
-        egui::CornerRadius::same(6),
+        egui::CornerRadius::ZERO,
         ui.visuals().faint_bg_color,
+    );
+    paint_table_grid(
+        &header.painter,
+        header.response.rect,
+        &COLUMN_WIDTHS,
+        palette.border,
     );
     let header_labels = [
         "协议",
-        "本地端点",
-        "远端端点",
-        "连接状态",
+        "本地地址",
+        "本地端口",
+        "远端地址",
+        "远端端口",
+        "状态",
         "PID",
-        "所属进程",
-        "操作",
+        "进程",
     ];
     for (index, label) in header_labels.iter().enumerate() {
         let column = match index {
             0 => SortColumn::Protocol,
             1 => SortColumn::LocalAddress,
-            2 => SortColumn::RemoteAddress,
-            3 => SortColumn::State,
-            4 => SortColumn::Pid,
-            5 => SortColumn::Process,
-            _ => continue,
+            2 => SortColumn::LocalAddress,
+            3 | 4 => SortColumn::RemoteAddress,
+            5 => SortColumn::State,
+            6 => SortColumn::Pid,
+            7 => SortColumn::Process,
+            _ => unreachable!(),
         };
         let cell_rect = table_cell_rect(header.response.rect, &COLUMN_WIDTHS, index);
         let response = ui.interact(
@@ -452,7 +789,7 @@ fn render_port_rows(
         let marker = if *sort_column == column {
             if *sort_ascending { " ▲" } else { " ▼" }
         } else {
-            ""
+            " ↕"
         };
         let header_text_color = if *sort_column == column {
             ui::accent(ui)
@@ -470,38 +807,34 @@ fn render_port_rows(
                 header_text_color,
             );
     }
-    header.painter.with_clip_rect(header.response.rect).text(
-        table_cell_rect(header.response.rect, &COLUMN_WIDTHS, 6).left_center()
-            + egui::vec2(8.0, 0.0),
-        egui::Align2::LEFT_CENTER,
-        "操作",
-        egui::FontId::proportional(13.5),
-        ui.visuals().text_color(),
-    );
-
     for (index, endpoint) in rows.iter().enumerate() {
-        let row = allocate_table_row(ui, table_width, ROW_HEIGHT, egui::Sense::hover());
-        let row_fill = if row.response.hovered() {
-            ui.visuals().widgets.hovered.bg_fill
-        } else if index % 2 == 1 {
-            ui.visuals().faint_bg_color
+        let row = allocate_table_row(ui, table_width, ROW_HEIGHT, egui::Sense::click());
+        let endpoint_key = endpoint_report_line(endpoint);
+        let selected = selected_endpoint.as_ref() == Some(&endpoint_key);
+        let row_fill = if selected {
+            palette.accent.gamma_multiply(0.16)
+        } else if row.response.hovered() {
+            palette.hover
         } else {
             Color32::TRANSPARENT
         };
         row.painter
-            .rect_filled(row.response.rect, egui::CornerRadius::same(4), row_fill);
+            .rect_filled(row.response.rect, egui::CornerRadius::ZERO, row_fill);
+        paint_table_grid(
+            &row.painter,
+            row.response.rect,
+            &COLUMN_WIDTHS,
+            palette.border,
+        );
+        if row.response.clicked() {
+            *selected_endpoint = Some(endpoint_key);
+        }
         let process_name = if endpoint.process_name.is_empty() {
             "进程已退出"
         } else {
             &endpoint.process_name
         };
-        let proto_cell = format!(
-            "{} {}",
-            endpoint.protocol.label(),
-            endpoint.ip_version.label()
-        );
-        let local_cell = endpoint.local_display();
-        let remote_cell = endpoint.remote_display();
+        let proto_cell = endpoint.protocol.label();
         let pid_cell = endpoint.pid.to_string();
 
         // 协议
@@ -516,85 +849,67 @@ fn render_port_rows(
         paint_single_cell(
             &row.painter,
             table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 1),
-            &local_cell,
+            &endpoint.local_address,
             egui::FontId::monospace(13.0),
             ui.visuals().text_color(),
         );
-        // 远端端点
         paint_single_cell(
             &row.painter,
             table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 2),
-            &remote_cell,
+            &endpoint.local_port.to_string(),
             egui::FontId::monospace(13.0),
-            if remote_cell == "-" {
+            ui.visuals().text_color(),
+        );
+        let remote_address = if endpoint.remote_address.is_empty() {
+            "-"
+        } else {
+            &endpoint.remote_address
+        };
+        paint_single_cell(
+            &row.painter,
+            table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 3),
+            remote_address,
+            egui::FontId::monospace(13.0),
+            if remote_address == "-" {
                 ui.visuals().weak_text_color()
             } else {
                 ui.visuals().text_color()
             },
         );
+        paint_single_cell(
+            &row.painter,
+            table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 4),
+            &endpoint.remote_port.unwrap_or(0).to_string(),
+            egui::FontId::monospace(13.0),
+            ui.visuals().weak_text_color(),
+        );
 
-        // 状态徽标
-        let state_rect = table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 3);
-        let (state_text, fg_color, bg_color) = match endpoint.state {
-            Some(TcpState::Listen) => (
-                "LISTEN",
-                palette.success_text,
-                palette
-                    .success_text
-                    .gamma_multiply(if ui.visuals().dark_mode { 0.22 } else { 0.12 }),
-            ),
-            Some(TcpState::Established) => (
-                "ESTABLISHED",
-                palette.accent,
-                palette
-                    .accent
-                    .gamma_multiply(if ui.visuals().dark_mode { 0.22 } else { 0.12 }),
-            ),
-            Some(TcpState::CloseWait) | Some(TcpState::TimeWait) => (
-                "WAIT",
-                palette.warning_text,
-                palette
-                    .warning_text
-                    .gamma_multiply(if ui.visuals().dark_mode { 0.22 } else { 0.12 }),
-            ),
-            Some(state) => (state.label(), palette.weak, palette.border_subtle),
-            None => ("-", palette.weak, Color32::TRANSPARENT),
-        };
-        if state_text != "-" {
-            let chip_rect = egui::Rect::from_center_size(
-                state_rect.left_center() + egui::vec2(44.0, 0.0),
-                egui::vec2(84.0, 20.0),
-            );
-            row.painter
-                .rect_filled(chip_rect, egui::CornerRadius::same(10), bg_color);
-            row.painter.text(
-                chip_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                state_text,
-                egui::FontId::proportional(11.5),
-                fg_color,
-            );
-        } else {
-            paint_single_cell(
-                &row.painter,
-                state_rect,
-                "-",
-                egui::FontId::proportional(13.0),
-                palette.weak,
-            );
-        }
+        // 状态
+        let state_rect = table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 5);
+        let state_text = endpoint.state.map_or("-", TcpState::label);
+        paint_single_cell(
+            &row.painter,
+            state_rect,
+            state_text,
+            egui::FontId::monospace(13.0),
+            if state_text == "-" {
+                palette.weak
+            } else {
+                palette.text
+            },
+        );
 
         // PID
         paint_single_cell(
             &row.painter,
-            table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 4),
+            table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 6),
             &pid_cell,
             egui::FontId::monospace(13.0),
             palette.weak,
         );
 
         // 进程名链接
-        let process_rect = table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 5);
+        let process_rect = table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 7);
         let process_response = ui.interact(
             process_rect,
             ui.id().with(("port-process", index, endpoint.pid)),
@@ -607,7 +922,7 @@ fn render_port_rows(
         let process_color = if process_response.hovered() {
             palette.accent_hover
         } else {
-            ui::accent(ui)
+            palette.text
         };
         if process_response.has_focus() {
             row.painter.rect_stroke(
@@ -638,53 +953,8 @@ fn render_port_rows(
         {
             actions.push(AppAction::InvokeTool(ToolInvocation::process(endpoint.pid)));
         }
-
-        // 操作复制按钮
-        let copy_rect = table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 6);
-        let copy_button_rect =
-            egui::Rect::from_center_size(copy_rect.center(), egui::vec2(48.0, 24.0));
-        let copy_response = ui.interact(
-            copy_button_rect,
-            ui.id().with(("copy-port-row", index, endpoint.pid)),
-            egui::Sense::click(),
-        );
-        copy_response.clone().on_hover_text("复制该端点记录");
-        let btn_fill = if copy_response.hovered() {
-            palette.secondary_button_hover
-        } else {
-            palette.secondary_button_bg
-        };
-        row.painter.rect(
-            copy_button_rect,
-            egui::CornerRadius::same(4),
-            btn_fill,
-            egui::Stroke::new(1.0_f32, palette.border_subtle),
-            egui::StrokeKind::Middle,
-        );
-        if copy_response.has_focus() {
-            row.painter.rect_stroke(
-                copy_button_rect.shrink(1.0),
-                egui::CornerRadius::same(4),
-                egui::Stroke::new(1.5_f32, ui::accent(ui)),
-                egui::StrokeKind::Middle,
-            );
-        }
-        row.painter.text(
-            copy_button_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "复制",
-            egui::FontId::proportional(12.0),
-            palette.text,
-        );
-        if copy_response.clicked()
-            || (copy_response.has_focus()
-                && ui.input(|input| {
-                    input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
-                }))
-        {
-            actions.push(AppAction::CopyText(endpoint_report_line(endpoint)));
-        }
     }
+    ui.spacing_mut().item_spacing = item_spacing;
 }
 
 fn paint_single_cell(
@@ -705,6 +975,77 @@ fn paint_single_cell(
         );
 }
 
+fn render_selected_endpoint(
+    ui: &mut egui::Ui,
+    endpoint: &NetworkEndpoint,
+    process: Option<&Result<ProcessSummary, AppError>>,
+    actions: &mut Vec<AppAction>,
+) {
+    let palette = ui::palette_for_ui(ui);
+    ui::card(ui, |ui| {
+        if ui.available_width() >= 720.0 {
+            ui.horizontal(|ui| {
+                render_selected_endpoint_identity(ui, endpoint, palette.success_text);
+                let action_width = 112.0;
+                ui.add_space((ui.available_width() - action_width).max(0.0));
+                if ui::secondary_button(ui, "跳转到进程").clicked() {
+                    actions.push(AppAction::InvokeTool(ToolInvocation::process(endpoint.pid)));
+                }
+            });
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                render_selected_endpoint_identity(ui, endpoint, palette.success_text);
+            });
+            ui.add_space(ui::SPACE_8);
+            ui.horizontal(|ui| {
+                if ui::secondary_button(ui, "跳转到进程").clicked() {
+                    actions.push(AppAction::InvokeTool(ToolInvocation::process(endpoint.pid)));
+                }
+            });
+        }
+        ui.separator();
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!("PID {}", endpoint.pid));
+            ui.separator();
+            ui.label(format!("进程 {}", endpoint.process_name));
+            if let Some(Ok(process)) = process {
+                ui.separator();
+                ui.label("路径");
+                ui.label(
+                    RichText::new(process.exe_path.as_deref().unwrap_or("无法读取")).monospace(),
+                );
+                ui.separator();
+                ui.label("启动时间");
+                ui.label(
+                    RichText::new(process.started_at.as_deref().unwrap_or("无法读取"))
+                        .monospace(),
+                );
+            }
+        });
+    });
+}
+
+/// 绘制所选端点的摘要字段；宽窄布局共用这一段，避免状态文字与端点格式分叉。
+fn render_selected_endpoint_identity(
+    ui: &mut egui::Ui,
+    endpoint: &NetworkEndpoint,
+    status_color: Color32,
+) {
+    ui.label("已选择");
+    ui.label(
+        RichText::new(format!(
+            "{} {} <-> {}",
+            endpoint.protocol.label(),
+            endpoint.local_display(),
+            endpoint.remote_display()
+        ))
+        .monospace(),
+    );
+    if let Some(state) = endpoint.state {
+        ui.label(RichText::new(state.label()).color(status_color));
+    }
+}
+
 struct TableRow {
     response: egui::Response,
     painter: egui::Painter,
@@ -716,25 +1057,40 @@ fn allocate_table_row(ui: &mut egui::Ui, width: f32, height: f32, sense: egui::S
 }
 
 fn table_cell_rect(row: egui::Rect, column_widths: &[f32], index: usize) -> egui::Rect {
-    let left = row.left() + column_widths[..index].iter().sum::<f32>();
+    let declared_width = column_widths.iter().sum::<f32>();
+    let scale = row.width() / declared_width;
+    let left = row.left() + column_widths[..index].iter().sum::<f32>() * scale;
     egui::Rect::from_min_size(
         egui::pos2(left, row.top()),
-        egui::vec2(column_widths[index], row.height()),
+        egui::vec2(column_widths[index] * scale, row.height()),
     )
 }
 
-fn endpoint_matches(endpoint: &NetworkEndpoint, filter: &str) -> bool {
-    filter.is_empty()
-        || endpoint.local_port.to_string().contains(filter)
-        || endpoint.pid.to_string().contains(filter)
-        || endpoint.process_name.to_lowercase().contains(filter)
-        || endpoint.local_address.to_lowercase().contains(filter)
-        || endpoint.remote_address.to_lowercase().contains(filter)
+/// 绘制表头和数据行的网格线，使列边界在滚动和缩放后仍与数据区域对齐。
+fn paint_table_grid(
+    painter: &egui::Painter,
+    row: egui::Rect,
+    column_widths: &[f32],
+    color: Color32,
+) {
+    let stroke = egui::Stroke::new(1.0_f32, color.gamma_multiply(0.85));
+    painter.line_segment([row.left_bottom(), row.right_bottom()], stroke);
+    for index in 0..column_widths.len().saturating_sub(1) {
+        let divider_x = table_cell_rect(row, column_widths, index).right();
+        painter.line_segment(
+            [
+                egui::pos2(divider_x, row.top()),
+                egui::pos2(divider_x, row.bottom()),
+            ],
+            stroke,
+        );
+    }
 }
 
 fn sort_endpoints(rows: &mut [&NetworkEndpoint], column: SortColumn, ascending: bool) {
     rows.sort_by(|left, right| {
         let order = match column {
+            SortColumn::None => Ordering::Equal,
             SortColumn::Protocol => left
                 .protocol
                 .label()
@@ -837,7 +1193,7 @@ fn csv_cell(value: &str) -> String {
 mod tests {
     use crate::model::{IpVersion, NetworkEndpoint, NetworkProtocol, TcpState};
 
-    use super::{SortColumn, csv_cell, endpoints_csv, sort_endpoints};
+    use super::{PortInspectorTool, SortColumn, csv_cell, endpoints_csv, sort_endpoints};
 
     fn endpoint(port: u16, pid: u32, name: &str) -> NetworkEndpoint {
         NetworkEndpoint {
@@ -878,5 +1234,44 @@ mod tests {
     fn csv_cells_escape_formula_prefixes_before_quoting() {
         assert_eq!(csv_cell("=SUM(A1:A2)"), "'=SUM(A1:A2)");
         assert_eq!(csv_cell("@name,tool"), "\"'@name,tool\"");
+    }
+
+    #[test]
+    fn review_data_matches_port_page_reference_summary() {
+        let mut tool = PortInspectorTool::default();
+        tool.seed_review();
+
+        assert_eq!(tool.endpoints.len(), 36);
+        assert_eq!(
+            tool.endpoints
+                .iter()
+                .filter(|endpoint| endpoint.state == Some(TcpState::Listen))
+                .count(),
+            18
+        );
+        assert_eq!(
+            tool.endpoints
+                .iter()
+                .filter(|endpoint| endpoint.state == Some(TcpState::Established))
+                .count(),
+            6
+        );
+        assert_eq!(
+            tool.endpoints
+                .iter()
+                .filter(|endpoint| endpoint.protocol == NetworkProtocol::Tcp)
+                .count(),
+            24
+        );
+        assert_eq!(
+            tool.endpoints
+                .iter()
+                .filter(|endpoint| endpoint.protocol == NetworkProtocol::Udp)
+                .count(),
+            12
+        );
+        assert_eq!(tool.endpoints[1].local_port, 8080);
+        assert_eq!(tool.endpoints[1].pid, 5678);
+        assert_eq!(tool.selected_process_pid, Some(5678));
     }
 }

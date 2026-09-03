@@ -15,14 +15,26 @@ use eframe::egui;
 
 use crate::{
     core::{actions::AppAction, invocation::ToolPayload, worker::TaskResult},
-    model::{CommunicationEventEnvelope, MtrProgress},
+    model::{CommunicationEventEnvelope, MtrProgress, PingProgress, TcpProbeProgress},
 };
 
 pub use registry::{ToolCategory, ToolDescriptor, ToolIcon, ToolRegistry};
 
+/// UI 审查入口使用的固定页面模式；正式运行始终使用 Default。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum UiReviewVariant {
+    #[default]
+    Default,
+    TcpServer,
+    UdpSpecial,
+}
+
 /// 工具 UI 所需的外壳只读状态；禁止将应用状态或其他工具实例直接交给页面。
-#[derive(Clone, Copy)]
-pub struct ToolUiContext;
+#[derive(Clone, Copy, Default)]
+pub struct ToolUiContext {
+    pub review_mode: bool,
+    pub review_variant: UiReviewVariant,
+}
 
 /// 编译进主程序的独立工具模块接口。
 pub trait ToolModule: Send {
@@ -39,6 +51,8 @@ pub trait ToolModule: Send {
     ) {
     }
     fn handle_mtr_progress(&mut self, _progress: MtrProgress) {}
+    fn handle_ping_progress(&mut self, _progress: PingProgress) {}
+    fn handle_tcp_probe_progress(&mut self, _progress: TcpProbeProgress) {}
     /// 接收持久通信会话事件；非通信工具使用默认空实现。
     fn handle_communication_event(&mut self, _event: CommunicationEventEnvelope) {}
     fn set_busy(&mut self, busy: bool);
@@ -47,7 +61,7 @@ pub trait ToolModule: Send {
     }
 }
 
-/// V0.4.0 的内建工具清单。这里是新增模块唯一需要接入外壳的注册位置。
+/// V0.4.1 的内建工具清单。这里是新增模块唯一需要接入外壳的注册位置。
 pub fn build_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::default();
     registry.register(Box::new(file_lock::FileLockTool::default()));

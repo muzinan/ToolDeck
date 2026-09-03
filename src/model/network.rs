@@ -53,22 +53,6 @@ pub enum TcpState {
 }
 
 impl TcpState {
-    pub const ALL: [Self; 13] = [
-        Self::Listen,
-        Self::Established,
-        Self::SynSent,
-        Self::SynReceived,
-        Self::FinWait1,
-        Self::FinWait2,
-        Self::CloseWait,
-        Self::Closing,
-        Self::LastAck,
-        Self::TimeWait,
-        Self::Closed,
-        Self::DeleteTcb,
-        Self::Unknown,
-    ];
-
     pub fn label(self) -> &'static str {
         match self {
             Self::Listen => "LISTENING",

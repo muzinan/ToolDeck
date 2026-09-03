@@ -34,6 +34,7 @@ impl CommunicationKind {
             Self::Serial => "serial-debug",
         }
     }
+
 }
 
 /// 网络会话限定的地址族。
@@ -285,6 +286,48 @@ impl CommunicationConfig {
             Self::Serial(config) => config.validate(),
         }
     }
+
+    /// 返回仅在当前进程内存中展示的会话摘要，供首页运行会话区快速定位会话。
+    pub fn session_summary(&self) -> String {
+        match self {
+            Self::Tcp(config) => match config.mode {
+                TcpDebugMode::Client => format!("{}:{}", config.address.trim(), config.port),
+                TcpDebugMode::Server => {
+                    format!("监听 {}:{}", config.address.trim(), config.port)
+                }
+            },
+            Self::Udp(config) => {
+                let local = format!("{}:{}", config.local_address.trim(), config.local_port);
+                if let Some(multicast) = &config.multicast {
+                    format!("{} · 组播 {}:{}", local, multicast.group.trim(), config.remote_port)
+                } else if config.remote_address.trim().is_empty() {
+                    local
+                } else {
+                    format!(
+                        "{} → {}:{}",
+                        local,
+                        config.remote_address.trim(),
+                        config.remote_port
+                    )
+                }
+            }
+            Self::Serial(config) => {
+                let parity = match config.parity {
+                    SerialParity::None => "N",
+                    SerialParity::Odd => "O",
+                    SerialParity::Even => "E",
+                };
+                format!(
+                    "{}，{}，{}{}{}",
+                    config.port_name.trim(),
+                    config.baud_rate,
+                    config.data_bits.label(),
+                    parity,
+                    config.stop_bits.label()
+                )
+            }
+        }
+    }
 }
 
 /// 发送目标；不同协议只消费与自身相关的变体。
@@ -303,6 +346,8 @@ pub enum CommunicationCommand {
         payload: Vec<u8>,
         target: CommunicationSendTarget,
     },
+    SetRts(bool),
+    SetDtr(bool),
     Stop,
 }
 
@@ -345,6 +390,9 @@ impl CommunicationRecord {
 pub struct CommunicationPeer {
     pub id: u64,
     pub endpoint: String,
+    pub connected_at: String,
+    pub received_bytes: u64,
+    pub sent_bytes: u64,
 }
 
 /// 会话连接状态。
@@ -355,6 +403,19 @@ pub enum CommunicationSessionState {
     Connected,
     Stopped,
     Failed,
+}
+
+impl CommunicationSessionState {
+    /// 返回首页与工具页复用的状态名称。
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Starting => "启动中",
+            Self::Listening => "监听中",
+            Self::Connected => "已连接",
+            Self::Stopped => "未连接",
+            Self::Failed => "失败",
+        }
+    }
 }
 
 /// 会话线程发回 UI 的事件。
@@ -409,7 +470,7 @@ pub enum PayloadFormat {
 impl PayloadFormat {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Text => "UTF-8 文本",
+            Self::Text => "文本",
             Self::Hex => "HEX",
         }
     }
@@ -485,14 +546,6 @@ pub struct CommunicationLog {
 impl CommunicationLog {
     pub fn records(&self) -> &VecDeque<CommunicationRecord> {
         &self.records
-    }
-
-    pub fn payload_bytes(&self) -> usize {
-        self.payload_bytes
-    }
-
-    pub fn evicted_records(&self) -> u64 {
-        self.evicted_records
     }
 
     pub fn queue_dropped_records(&self) -> u64 {
@@ -599,19 +652,42 @@ mod tests {
     }
 
     #[test]
+    fn session_summary_preserves_current_tcp_and_serial_configuration() {
+        let tcp = CommunicationConfig::Tcp(TcpDebugConfig {
+            mode: TcpDebugMode::Client,
+            family: CommunicationIpFamily::V4,
+            address: "192.0.2.10".into(),
+            port: 8080,
+            connect_timeout_ms: 3_000,
+        });
+        let serial = CommunicationConfig::Serial(SerialDebugConfig {
+            port_name: "COM3".into(),
+            baud_rate: 115_200,
+            data_bits: SerialDataBits::Eight,
+            parity: SerialParity::None,
+            stop_bits: SerialStopBits::One,
+            flow_control: SerialFlowControl::None,
+            read_timeout_ms: 100,
+        });
+
+        assert_eq!(tcp.session_summary(), "192.0.2.10:8080");
+        assert_eq!(serial.session_summary(), "COM3，115200，8N1");
+    }
+
+    #[test]
     fn log_enforces_record_and_payload_limits_independently() {
         let mut log = CommunicationLog::default();
         for _ in 0..=MAX_LOG_RECORDS {
             log.push_batch(vec![record(vec![1])]);
         }
         assert_eq!(log.records().len(), MAX_LOG_RECORDS);
-        assert_eq!(log.evicted_records(), 1);
+        assert_eq!(log.evicted_records, 1);
 
         log.clear();
         log.push_batch(vec![record(vec![0; MAX_LOG_PAYLOAD_BYTES])]);
         log.push_batch(vec![record(vec![1])]);
         assert_eq!(log.records().len(), 1);
-        assert_eq!(log.payload_bytes(), 1);
+        assert_eq!(log.payload_bytes, 1);
     }
 
     #[test]
@@ -619,7 +695,7 @@ mod tests {
         let mut log = CommunicationLog::default();
         log.add_queue_dropped(7);
         assert_eq!(log.queue_dropped_records(), 7);
-        assert_eq!(log.evicted_records(), 0);
+        assert_eq!(log.evicted_records, 0);
     }
 
     #[test]

@@ -12,11 +12,14 @@ use crate::{
 pub enum AppAction {
     NavigateTo(String),
     InvokeTool(ToolInvocation),
-    PickFileForLocks,
     ExportPortsCsv {
         content: String,
     },
     ExportCommunicationLog {
+        content: String,
+        file_name: String,
+    },
+    ExportText {
         content: String,
         file_name: String,
     },
@@ -32,18 +35,18 @@ pub enum AppAction {
         record_type: crate::model::DnsRecordType,
         bypass_cache: bool,
     },
+    StopDns,
     RunPing {
         host: String,
-        count: u32,
-        timeout_ms: u32,
-        payload_size: u16,
-        family: crate::model::PingAddressFamily,
+        config: crate::model::PingConfig,
     },
+    StopPing,
     RunTcpProbe {
         host: String,
         port: u16,
-        timeout_ms: u32,
+        config: crate::model::TcpProbeConfig,
     },
+    StopTcpProbe,
     RunMtr {
         host: String,
         config: crate::model::MtrConfig,
@@ -53,6 +56,9 @@ pub enum AppAction {
         path: PathBuf,
     },
     RefreshPorts,
+    LoadPortProcessDetails {
+        pid: u32,
+    },
     LoadProcessTree,
     InspectProcess {
         pid: u32,

@@ -24,22 +24,135 @@ pub enum ThemePreference {
     Dark,
 }
 
+/// 预设只标识允许保存的工具类型，不携带目标、路径、PID 或端点。
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub enum SafePresetTool {
+    #[default]
+    Ping,
+    TcpProbe,
+    Mtr,
+    TcpDebug,
+    UdpDebug,
+    SerialDebug,
+}
+
+impl SafePresetTool {
+    pub const ALL: [Self; 6] = [
+        Self::Ping,
+        Self::TcpProbe,
+        Self::Mtr,
+        Self::TcpDebug,
+        Self::UdpDebug,
+        Self::SerialDebug,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Ping => "Ping",
+            Self::TcpProbe => "TCP 端口测试",
+            Self::Mtr => "MTR",
+            Self::TcpDebug => "TCP 调试",
+            Self::UdpDebug => "UDP 调试",
+            Self::SerialDebug => "串口调试",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub enum SafePresetFamily {
+    #[default]
+    Auto,
+    V4,
+    V6,
+}
+
+impl SafePresetFamily {
+    pub const ALL: [Self; 3] = [Self::Auto, Self::V4, Self::V6];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "自动",
+            Self::V4 => "IPv4",
+            Self::V6 => "IPv6",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub enum SafePresetFormat {
+    #[default]
+    Text,
+    Hex,
+}
+
+impl SafePresetFormat {
+    pub const ALL: [Self; 2] = [Self::Text, Self::Hex];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Text => "UTF-8",
+            Self::Hex => "HEX",
+        }
+    }
+}
+
+/// 可持久化参数白名单；全部字段均为枚举、布尔或有界数值。
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(default)]
+pub struct SafeToolPreset {
+    /// 最后修改时间，仅用于在设置页排序与展示，不携带目标、路径或会话数据。
+    pub updated_at: Option<String>,
+    pub tool: SafePresetTool,
+    pub family: SafePresetFamily,
+    pub timeout_ms: u32,
+    pub interval_ms: u32,
+    pub attempts: u32,
+    pub display_format: SafePresetFormat,
+    pub append_crlf: bool,
+    pub serial_baud_rate: u32,
+}
+
+impl Default for SafeToolPreset {
+    fn default() -> Self {
+        Self {
+            updated_at: None,
+            tool: SafePresetTool::Ping,
+            family: SafePresetFamily::Auto,
+            timeout_ms: 1_000,
+            interval_ms: 1_000,
+            attempts: 4,
+            display_format: SafePresetFormat::Text,
+            append_crlf: false,
+            serial_baud_rate: 115_200,
+        }
+    }
+}
+
+impl SafeToolPreset {
+    fn sanitize(&mut self) {
+        self.timeout_ms = self.timeout_ms.clamp(100, 30_000);
+        self.interval_ms = self.interval_ms.clamp(100, 3_600_000);
+        self.attempts = self.attempts.clamp(1, 100);
+        self.serial_baud_rate = self.serial_baud_rate.clamp(300, 4_000_000);
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AppSettings {
     pub theme: ThemePreference,
     pub context_menu_enabled: bool,
-    pub recent_tools: Vec<String>,
     pub favorite_tools: Vec<String>,
+    pub presets: Vec<SafeToolPreset>,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            theme: ThemePreference::System,
+            theme: ThemePreference::Dark,
             context_menu_enabled: false,
-            recent_tools: Vec::new(),
             favorite_tools: Vec::new(),
+            presets: Vec::new(),
         }
     }
 }
@@ -92,11 +205,17 @@ impl SettingsStore {
             }
         };
 
-        match serde_json::from_str(&contents) {
-            Ok(settings) => SettingsLoad {
-                settings,
-                warning: None,
-            },
+        match serde_json::from_str::<AppSettings>(&contents) {
+            Ok(mut settings) => {
+                settings.presets.truncate(12);
+                for preset in &mut settings.presets {
+                    preset.sanitize();
+                }
+                SettingsLoad {
+                    settings,
+                    warning: None,
+                }
+            }
             Err(error) => {
                 let backup = self.backup_corrupt_settings();
                 let warning = match backup {
@@ -193,7 +312,7 @@ fn atomic_replace(temporary_path: &Path, settings_path: &Path) -> Result<(), App
 mod tests {
     use std::{fs, time::SystemTime};
 
-    use super::{AppSettings, SettingsStore, ThemePreference};
+    use super::{AppSettings, SafeToolPreset, SettingsStore, ThemePreference};
 
     fn test_directory(name: &str) -> std::path::PathBuf {
         let stamp = SystemTime::now()
@@ -209,6 +328,25 @@ mod tests {
         assert_eq!(settings.theme, ThemePreference::Dark);
         assert!(!settings.context_menu_enabled);
         assert!(settings.favorite_tools.is_empty());
+        assert!(settings.presets.is_empty());
+    }
+
+    #[test]
+    fn preset_serialization_contains_only_whitelisted_non_sensitive_fields() {
+        let mut settings = AppSettings::default();
+        settings.presets.push(SafeToolPreset::default());
+        let json = serde_json::to_string(&settings).unwrap();
+        for forbidden in [
+            "target", "host", "path", "pid", "endpoint", "payload", "log",
+        ] {
+            assert!(!json.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn settings_serialization_omits_recent_tool_history() {
+        let json = serde_json::to_string(&AppSettings::default()).unwrap();
+        assert!(!json.contains("recent_tools"));
     }
 
     #[test]

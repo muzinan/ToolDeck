@@ -18,3 +18,19 @@ pub fn local_time_hms_millis() -> String {
         time.wHour, time.wMinute, time.wSecond, time.wMilliseconds
     )
 }
+
+/// 返回包含日期和毫秒的系统本地时间，用于标记重复网络探测的开始时刻。
+pub fn local_date_time_millis() -> String {
+    // SAFETY: GetLocalTime 无输入指针，返回按值初始化的 SYSTEMTIME。
+    let time = unsafe { GetLocalTime() };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+        time.wYear,
+        time.wMonth,
+        time.wDay,
+        time.wHour,
+        time.wMinute,
+        time.wSecond,
+        time.wMilliseconds
+    )
+}

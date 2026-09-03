@@ -12,10 +12,10 @@ mod settings;
 mod tools;
 mod ui;
 
-use app::ToolboxApp;
+use app::{ToolboxApp, UiReviewOptions};
 use core::invocation::ToolInvocation;
 use platform::windows::single_instance::{InstanceRole, SingleInstance};
-use settings::SettingsStore;
+use settings::{AppSettings, SettingsLoad, SettingsStore};
 use std::{panic, process::ExitCode};
 use windows::{
     Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW},
@@ -63,7 +63,15 @@ fn run() -> anyhow::Result<()> {
     }
     tracing::info!("应用启动");
 
-    let initial_invocation = ToolInvocation::from_command_line()?;
+    #[cfg(feature = "ui-review")]
+    let review = ui_review_request()?;
+    #[cfg(not(feature = "ui-review"))]
+    let review: Option<(String, std::path::PathBuf, [f32; 2])> = None;
+    let initial_invocation = if review.is_some() {
+        None
+    } else {
+        ToolInvocation::from_command_line()?
+    };
     let instance = SingleInstance::acquire(initial_invocation.clone())?;
 
     let mut primary_instance = match instance {
@@ -75,12 +83,32 @@ fn run() -> anyhow::Result<()> {
     // primary_instance 必须保留在 main 的作用域内，确保互斥体句柄直到 run_native 返回后才关闭。
 
     let settings_store = SettingsStore::open()?;
-    let loaded_settings = settings_store.load();
+    let loaded_settings = if review.is_some() {
+        SettingsLoad {
+            settings: AppSettings::default(),
+            warning: None,
+        }
+    } else {
+        settings_store.load()
+    };
     if loaded_settings.warning.is_some() {
         tracing::warn!("设置加载失败，已回退默认值并保留唯一损坏备份");
     }
     let settings = loaded_settings.settings;
-    let native_options = app::native_options(&settings, settings_store.eframe_storage_path());
+    let mut native_options = app::native_options(&settings, settings_store.eframe_storage_path());
+    if let Some((_, _, size)) = &review {
+        native_options.viewport = eframe::egui::ViewportBuilder::default()
+            .with_inner_size(*size)
+            .with_min_inner_size([980.0, 640.0])
+            .with_maximized(false)
+            .with_fullscreen(false)
+            .with_resizable(false);
+        native_options.persist_window = false;
+    }
+    let review_page = review.as_ref().map(|(page, _, _)| page.clone());
+    let review_width = review.as_ref().map(|(_, _, size)| size[0]);
+    #[cfg(feature = "ui-review")]
+    let review_height = review.as_ref().map(|(_, _, size)| size[1]);
 
     eframe::run_native(
         APP_NAME,
@@ -93,10 +121,98 @@ fn run() -> anyhow::Result<()> {
                 loaded_settings.warning,
                 receiver,
                 initial_invocation,
+                UiReviewOptions {
+                    page: review_page,
+                    width: review_width,
+                    #[cfg(feature = "ui-review")]
+                    height: review_height,
+                    #[cfg(feature = "ui-review")]
+                    screenshot_path: review.as_ref().map(|(_, path, _)| path.clone()),
+                },
             )?))
         }),
     )
     .map_err(|error| anyhow::anyhow!("GUI 初始化失败: {error}"))
+}
+
+#[cfg(feature = "ui-review")]
+fn ui_review_request() -> anyhow::Result<Option<(String, std::path::PathBuf, [f32; 2])>> {
+    let mut arguments = std::env::args_os().skip(1);
+    let Some(first) = arguments.next() else {
+        return Ok(None);
+    };
+    if first != "--ui-review" {
+        return Ok(None);
+    }
+    let page = arguments
+        .next()
+        .map(|value| value.to_string_lossy().into_owned())
+        .ok_or_else(|| anyhow::anyhow!("--ui-review 缺少页面 ID"))?;
+    let screenshot_flag = arguments
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("--ui-review 缺少 --screenshot"))?;
+    if screenshot_flag != "--screenshot" {
+        anyhow::bail!("--ui-review 页面后必须指定 --screenshot");
+    }
+    let path = arguments
+        .next()
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("--screenshot 缺少 PNG 路径"))?;
+    let size = match arguments.next() {
+        Some(flag) if flag == "--size" => {
+            let value = arguments
+                .next()
+                .map(|value| value.to_string_lossy().into_owned())
+                .ok_or_else(|| anyhow::anyhow!("--size 缺少 WIDTHxHEIGHT"))?;
+            parse_ui_review_size(&value)?
+        }
+        Some(_) => anyhow::bail!("--ui-review 只接受可选的 --size WIDTHxHEIGHT"),
+        None => [1536.0, 1024.0],
+    };
+    if arguments.next().is_some() {
+        anyhow::bail!("--ui-review 不接受额外参数");
+    }
+    let valid = [
+        "home",
+        "file-lock",
+        "port-inspector",
+        "process-inspector",
+        "dns-lookup",
+        "ping",
+        "tcp-probe",
+        "mtr",
+        "tcp-debug",
+        "tcp-debug-server",
+        "udp-debug",
+        "udp-debug-special",
+        "serial-debug",
+        "settings",
+        "about",
+    ];
+    if !valid.contains(&page.as_str()) {
+        anyhow::bail!("未知的 UI 审查页面：{page}");
+    }
+    if path.extension().and_then(|value| value.to_str()) != Some("png") {
+        anyhow::bail!("UI 审查截图必须使用 .png 扩展名");
+    }
+    Ok(Some((page, path, size)))
+}
+
+#[cfg(feature = "ui-review")]
+fn parse_ui_review_size(value: &str) -> anyhow::Result<[f32; 2]> {
+    let (width, height) = value
+        .split_once('x')
+        .ok_or_else(|| anyhow::anyhow!("UI 审查尺寸必须使用 WIDTHxHEIGHT"))?;
+    let width = width
+        .parse::<u32>()
+        .map_err(|_| anyhow::anyhow!("UI 审查宽度必须是整数"))?;
+    let height = height
+        .parse::<u32>()
+        .map_err(|_| anyhow::anyhow!("UI 审查高度必须是整数"))?;
+    if !(980..=3840).contains(&width) || !(640..=2160).contains(&height) {
+        anyhow::bail!("UI 审查尺寸必须位于 980×640 至 3840×2160 之间");
+    }
+    Ok([width as f32, height as f32])
 }
 
 fn runtime_log_filter() -> tracing_subscriber::EnvFilter {

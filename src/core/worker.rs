@@ -15,8 +15,9 @@ use std::{
 use crate::{
     model::{
         AppError, DnsRecordType, DnsResult, FileLockResult, MtrConfig, MtrProgress, MtrResult,
-        NetworkEndpoint, PingAddressFamily, PingSummary, ProcessCommandLine, ProcessInfo,
-        ProcessTreeSnapshot, SerialPortDescriptor, TcpProbeResult,
+        NetworkEndpoint, PingConfig, PingProgress, PingSummary, ProcessCommandLine, ProcessInfo,
+        ProcessSummary, ProcessTreeSnapshot, SerialPortDescriptor, TcpProbeConfig, TcpProbeProgress,
+        TcpProbeResult,
     },
     platform::windows,
 };
@@ -34,6 +35,9 @@ pub enum TaskRequest {
         path: PathBuf,
     },
     Ports,
+    PortProcessDetails {
+        pid: u32,
+    },
     Process {
         pid: u32,
     },
@@ -51,15 +55,12 @@ pub enum TaskRequest {
     },
     Ping {
         host: String,
-        count: u32,
-        timeout_ms: u32,
-        payload_size: u16,
-        family: PingAddressFamily,
+        config: PingConfig,
     },
     TcpProbe {
         host: String,
         port: u16,
-        timeout_ms: u32,
+        config: TcpProbeConfig,
     },
     Mtr {
         host: String,
@@ -73,6 +74,7 @@ impl TaskRequest {
         match self {
             Self::FileLocks { .. } => "file-lock",
             Self::Ports => "port-inspector",
+            Self::PortProcessDetails { .. } => "port-inspector",
             Self::Process { .. }
             | Self::ProcessTree
             | Self::ProcessCommandLine { .. }
@@ -83,6 +85,20 @@ impl TaskRequest {
             Self::Mtr { .. } => "mtr",
             Self::SerialPorts => "serial-debug",
         }
+    }
+
+    /// 返回用于淘汰同类旧请求的稳定键。详情读取与端点刷新共用页面，
+    /// 但不能互相丢弃结果，因此为详情读取保留独立键。
+    pub fn request_key(&self) -> &'static str {
+        match self {
+            Self::PortProcessDetails { .. } => "port-inspector-process-details",
+            _ => self.target_tool_id(),
+        }
+    }
+
+    /// 指示请求是否应占用整个工具页面的主查询状态。
+    pub fn marks_tool_busy(&self) -> bool {
+        !matches!(self, Self::PortProcessDetails { .. })
     }
 }
 
@@ -98,6 +114,10 @@ pub struct TaskRequestEnvelope {
 pub enum TaskResult {
     FileLocks(Result<FileLockResult, AppError>),
     Ports(Result<Vec<NetworkEndpoint>, AppError>),
+    PortProcessDetails {
+        pid: u32,
+        result: Result<ProcessSummary, AppError>,
+    },
     Process(Result<ProcessInfo, AppError>),
     ProcessTree(Result<ProcessTreeSnapshot, AppError>),
     ProcessCommandLine {
@@ -120,6 +140,9 @@ impl TaskResult {
             | Self::Process(Err(error))
             | Self::ProcessTree(Err(error))
             | Self::ProcessTerminated(Err(error)) => Some(error),
+            Self::PortProcessDetails {
+                result: Err(error), ..
+            } => Some(error),
             Self::ProcessCommandLine {
                 result: Err(error), ..
             } => Some(error),
@@ -133,6 +156,7 @@ impl TaskResult {
             | Self::Process(Ok(_))
             | Self::ProcessTree(Ok(_))
             | Self::ProcessTerminated(Ok(_)) => None,
+            Self::PortProcessDetails { result: Ok(_), .. } => None,
             Self::ProcessCommandLine { result: Ok(_), .. } => None,
             Self::Dns(Ok(_))
             | Self::Ping(Ok(_))
@@ -154,6 +178,8 @@ pub enum TaskEvent {
     },
     Finished(TaskResult),
     MtrProgress(MtrProgress),
+    PingProgress(PingProgress),
+    TcpProbeProgress(TcpProbeProgress),
 }
 
 /// 事件信封携带请求与目标工具标识，UI 可在进入工具模块前完成最新请求判定。
@@ -161,6 +187,7 @@ pub enum TaskEvent {
 pub struct TaskEventEnvelope {
     pub request_id: RequestId,
     pub target_tool_id: &'static str,
+    pub request_key: &'static str,
     pub event: TaskEvent,
 }
 
@@ -202,7 +229,7 @@ impl TaskDispatcher {
 
     pub fn dispatch(&self, request: TaskRequest) -> Result<RequestId, AppError> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
-        let target_tool_id = request.target_tool_id();
+        let request_key = request.request_key();
         let cancel = Arc::new(AtomicBool::new(false));
         let envelope = TaskRequestEnvelope {
             request_id,
@@ -220,7 +247,7 @@ impl TaskDispatcher {
                 }
             })?;
         if let Ok(mut cancellations) = self.cancellations.lock() {
-            cancellations.insert(target_tool_id, (request_id, cancel));
+            cancellations.insert(request_key, (request_id, cancel));
         }
         Ok(request_id)
     }
@@ -277,14 +304,21 @@ fn worker_loop(
             envelope
         };
         let target_tool_id = envelope.request.target_tool_id();
+        let request_key = envelope.request.request_key();
         let result = execute_with_progress(
             envelope.request,
             &sender,
             envelope.request_id,
             target_tool_id,
+            request_key,
             &envelope.cancel,
         );
-        for event in ordinary_task_events(envelope.request_id, target_tool_id, result) {
+        for event in ordinary_task_events(
+            envelope.request_id,
+            target_tool_id,
+            request_key,
+            result,
+        ) {
             // 接收端关闭表示 GUI 正在退出，此时结束当前工作线程，不再消费后续请求。
             if sender.send(event).is_err() {
                 return;
@@ -296,11 +330,13 @@ fn worker_loop(
 fn ordinary_task_events(
     request_id: RequestId,
     target_tool_id: &'static str,
+    request_key: &'static str,
     result: TaskResult,
 ) -> [TaskEventEnvelope; 1] {
     [TaskEventEnvelope {
         request_id,
         target_tool_id,
+        request_key,
         event: TaskEvent::Finished(result),
     }]
 }
@@ -309,6 +345,10 @@ fn execute(request: TaskRequest) -> TaskResult {
     match request {
         TaskRequest::FileLocks { path } => TaskResult::FileLocks(windows::query_file_locks(&path)),
         TaskRequest::Ports => TaskResult::Ports(windows::query_network_endpoints()),
+        TaskRequest::PortProcessDetails { pid } => TaskResult::PortProcessDetails {
+            pid,
+            result: windows::query_process_summary(pid),
+        },
         TaskRequest::Process { pid } => TaskResult::Process(windows::query_process(pid)),
         TaskRequest::ProcessTree => TaskResult::ProcessTree(windows::query_process_tree()),
         TaskRequest::ProcessCommandLine { pid } => TaskResult::ProcessCommandLine {
@@ -323,24 +363,16 @@ fn execute(request: TaskRequest) -> TaskResult {
             record_type,
             bypass_cache,
         } => TaskResult::Dns(windows::query_dns(&host, record_type, bypass_cache)),
-        TaskRequest::Ping {
-            host,
-            count,
-            timeout_ms,
-            payload_size,
-            family,
-        } => TaskResult::Ping(windows::ping_host(
+        TaskRequest::Ping { host, config } => TaskResult::Ping(windows::ping_host(
             &host,
-            count,
-            timeout_ms,
-            payload_size,
-            family,
+            config.count,
+            config.timeout_ms,
+            config.payload_size,
+            config.family,
         )),
-        TaskRequest::TcpProbe {
-            host,
-            port,
-            timeout_ms,
-        } => TaskResult::TcpProbe(windows::tcp_probe(&host, port, timeout_ms)),
+        TaskRequest::TcpProbe { host, port, config } => {
+            TaskResult::TcpProbe(windows::tcp_probe(&host, port, config.timeout_ms))
+        }
         TaskRequest::Mtr { host, config } => TaskResult::Mtr(windows::mtr_host(&host, &config)),
         TaskRequest::SerialPorts => TaskResult::SerialPorts(windows::query_serial_ports()),
     }
@@ -351,43 +383,20 @@ fn execute_with_progress(
     sender: &mpsc::Sender<TaskEventEnvelope>,
     request_id: RequestId,
     target_tool_id: &'static str,
+    request_key: &'static str,
     cancel: &AtomicBool,
 ) -> TaskResult {
     match request {
-        TaskRequest::Ping {
-            host,
-            count,
-            timeout_ms,
-            payload_size,
-            family,
-        } => TaskResult::Ping(windows::ping_host_with_progress(
-            &host,
-            count,
-            timeout_ms,
-            payload_size,
-            family,
-            |sample, completed, total| {
-                let message = sample.elapsed_ms.map_or_else(
-                    || {
-                        format!(
-                            "{}：{}",
-                            sample.address,
-                            sample.error.as_deref().unwrap_or("失败")
-                        )
-                    },
-                    |elapsed| format!("{}：{elapsed:.1} ms", sample.address),
-                );
+        TaskRequest::Ping { host, config } => TaskResult::Ping(
+            windows::ping_host_with_progress_cancellable(&host, &config, cancel, |progress| {
                 let _ = sender.send(TaskEventEnvelope {
                     request_id,
                     target_tool_id,
-                    event: TaskEvent::Progress {
-                        message,
-                        completed: Some(u64::from(completed)),
-                        total: Some(u64::from(total)),
-                    },
+                    request_key,
+                    event: TaskEvent::PingProgress(progress),
                 });
-            },
-        )),
+            }),
+        ),
         TaskRequest::Mtr { host, config } => TaskResult::Mtr(windows::mtr_host_with_progress(
             &host,
             &config,
@@ -396,10 +405,27 @@ fn execute_with_progress(
                 let _ = sender.send(TaskEventEnvelope {
                     request_id,
                     target_tool_id,
+                    request_key,
                     event: TaskEvent::MtrProgress(progress),
                 });
             },
         )),
+        TaskRequest::TcpProbe { host, port, config } => {
+            TaskResult::TcpProbe(windows::tcp_probe_with_progress_cancellable(
+                &host,
+                port,
+                &config,
+                cancel,
+                |progress| {
+                    let _ = sender.send(TaskEventEnvelope {
+                        request_id,
+                        target_tool_id,
+                        request_key,
+                        event: TaskEvent::TcpProbeProgress(progress),
+                    });
+                },
+            ))
+        }
         request => execute(request),
     }
 }
@@ -427,6 +453,11 @@ mod tests {
         );
         assert_eq!(TaskRequest::Ports.target_tool_id(), "port-inspector");
         assert_eq!(
+            TaskRequest::PortProcessDetails { pid: 1 }.request_key(),
+            "port-inspector-process-details"
+        );
+        assert!(!TaskRequest::PortProcessDetails { pid: 1 }.marks_tool_busy());
+        assert_eq!(
             TaskRequest::TerminateProcess { pid: 1 }.target_tool_id(),
             "process-inspector"
         );
@@ -446,7 +477,12 @@ mod tests {
 
     #[test]
     fn ordinary_query_emits_only_one_finished_event() {
-        let events = ordinary_task_events(7, "port-inspector", TaskResult::Ports(Ok(Vec::new())));
+        let events = ordinary_task_events(
+            7,
+            "port-inspector",
+            "port-inspector",
+            TaskResult::Ports(Ok(Vec::new())),
+        );
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0].event, TaskEvent::Finished(_)));
     }

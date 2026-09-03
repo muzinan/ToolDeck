@@ -52,4 +52,5 @@ pub struct DnsRecord {
 pub struct DnsResult {
     pub host: String,
     pub records: Vec<DnsRecord>,
+    pub elapsed_ms: u64,
 }

@@ -75,10 +75,14 @@ pub fn query_file_locks(path: &Path) -> Result<FileLockResult, AppError> {
         .into_iter()
         .map(|entry| {
             let pid = entry.Process.dwProcessId;
+            // 进程在快照与 Restart Manager 之间退出时，退回 RM 提供的应用名，其余字段按未知处理。
             query_process_summary(pid).unwrap_or_else(|_| ProcessSummary {
                 pid,
                 name: wide::from_wide(&entry.strAppName),
                 exe_path: None,
+                owner: None,
+                started_at: None,
+                run_state: crate::model::ProcessRunState::Unknown,
             })
         })
         .collect();
