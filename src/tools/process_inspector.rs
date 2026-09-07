@@ -74,13 +74,13 @@ impl ToolModule for ProcessInspectorTool {
             self.seed_review();
         }
         let mut actions = Vec::new();
-        let palette = ui::palette_for_ui(ui);
+        let _palette = ui::palette_for_ui(ui);
         if !context.review_mode && !self.tree_requested {
             self.tree_requested = true;
             self.tree_refresh_pending = true;
             actions.push(AppAction::LoadProcessTree);
         }
-        heading(ui, "进程关系", "浏览进程树、父进程链与启动信息");
+        heading(ui, "进程关系", "查看进程树、父链与子进程");
         ui.add_space(0.0);
         ui::card(ui, |ui| {
             ui.horizontal(|ui| {
@@ -92,7 +92,7 @@ impl ToolModule for ProcessInspectorTool {
                     ui::text_input(&mut self.tree_filter, "搜索进程名称或 PID"),
                 );
                 ui::primary_button_sized(ui, "搜索", [action_width, ui::CONTROL_HEIGHT]);
-                if ui::secondary_button_sized(ui, "刷新", [action_width, ui::CONTROL_HEIGHT])
+                if ui::secondary_button_sized(ui, "🔄 刷新", [action_width, ui::CONTROL_HEIGHT])
                     .clicked()
                     && !context.review_mode
                 {
@@ -122,19 +122,12 @@ impl ToolModule for ProcessInspectorTool {
                     .collect::<HashMap<_, _>>();
                 let roots = snapshot.roots.clone();
 
-                let panel_height = (ui.ctx().screen_rect().height() * 0.70).clamp(520.0, 950.0);
+                let panel_height = (ui.ctx().screen_rect().height() * 0.58).clamp(420.0, 720.0);
                 let detail_width = ui.available_width();
                 if detail_width >= 760.0 {
                     ui.columns(2, |columns| {
                         columns[0].set_min_width(300.0);
                         ui::card(&mut columns[0], |ui| {
-                            ui.label(
-                                RichText::new("全部存活进程树")
-                                    .strong()
-                                    .size(15.0)
-                                    .color(palette.text),
-                            );
-                            ui.add_space(ui::SPACE_8);
                             egui::ScrollArea::both()
                                 .id_salt("process-tree-left-scroll")
                                 .max_height(panel_height)
@@ -166,13 +159,6 @@ impl ToolModule for ProcessInspectorTool {
                     });
                 } else {
                     ui::card(ui, |ui| {
-                        ui.label(
-                            RichText::new("全部存活进程树")
-                                .strong()
-                                .size(15.0)
-                                .color(palette.text),
-                        );
-                        ui.add_space(ui::SPACE_8);
                         egui::ScrollArea::both().show(ui, |ui| {
                             render_tree_header(ui);
                             ui.separator();
@@ -445,7 +431,6 @@ impl ProcessInspectorTool {
                 exe_path: Some(r"C:\Program Files\ToolDeck\ToolDeck.Helper.exe".into()),
                 ..Default::default()
             }],
-            ..Default::default()
         }));
     }
 
@@ -491,7 +476,7 @@ impl ProcessInspectorTool {
             let selected = self.selected_pid == Some(pid);
             let response = ui
                 .allocate_ui_with_layout(
-                egui::vec2(widths[0], 38.0),
+                egui::vec2(widths[0], 32.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
                     ui.add_space((depth.min(12) as f32) * 16.0);
@@ -507,7 +492,7 @@ impl ProcessInspectorTool {
                     ui.add_sized(
                         [
                             (widths[0] - ((depth.min(12) as f32) * 16.0) - 20.0).max(64.0),
-                            38.0,
+                            32.0,
                         ],
                         egui::Button::selectable(selected, RichText::new(&node.name).strong()),
                     )
@@ -539,19 +524,19 @@ impl ProcessInspectorTool {
                 actions.push(AppAction::InspectProcess { pid });
             }
             ui.add_sized(
-                [widths[1], 38.0],
+                [widths[1], 32.0],
                 egui::Label::new(RichText::new(node.pid.to_string()).monospace()),
             );
             ui.add_sized(
-                [widths[2], 38.0],
+                [widths[2], 32.0],
                 egui::Label::new(RichText::new(format_cpu(node.cpu_percent)).monospace()),
             );
             ui.add_sized(
-                [widths[3], 38.0],
+                [widths[3], 32.0],
                 egui::Label::new(RichText::new(format_memory(node.memory_bytes)).monospace()),
             );
             ui.add_sized(
-                [widths[4], 38.0],
+                [widths[4], 32.0],
                 egui::Label::new(
                     RichText::new(node.run_state.label())
                         .color(run_state_color(node.run_state, ui::palette_for_ui(ui))),
@@ -701,6 +686,14 @@ impl ProcessInspectorTool {
                         egui::Label::new(RichText::new(&child.name).color(palette.text))
                             .sense(egui::Sense::click()),
                     );
+                    ui::show_clipped_text_tooltip(
+                        ui,
+                        response.rect,
+                        ("process-child-name", child.pid),
+                        &child.name,
+                        egui::FontId::proportional(14.0),
+                        (name_width - 8.0).max(0.0),
+                    );
                     if response.clicked() {
                         actions.push(AppAction::InspectProcess { pid: child.pid });
                     }
@@ -745,7 +738,7 @@ impl ProcessInspectorTool {
                 actions.push(AppAction::OpenFileLocation(PathBuf::from(path)));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui::danger_button(ui, "结束进程").clicked() {
+                if ui::danger_button(ui, "⮾ 结束进程").clicked() {
                     actions.push(AppAction::RequestTerminateProcess(process.summary()));
                 }
             });

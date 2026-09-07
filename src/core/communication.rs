@@ -15,7 +15,7 @@ use crate::{
         AppError, COMMUNICATION_QUEUE_CAPACITY, CommunicationCommand, CommunicationConfig,
         CommunicationDirection, CommunicationEvent, CommunicationEventEnvelope,
         CommunicationIpFamily, CommunicationKind, CommunicationPeer, CommunicationRecord,
-        CommunicationSendTarget, CommunicationSessionState, MAX_RECORD_BATCH,
+        CommunicationSendTarget, CommunicationSessionState, PayloadFormat, MAX_RECORD_BATCH,
         MAX_TCP_PENDING_BYTES, MAX_UDP_PAYLOAD_BYTES, RECORD_BATCH_INTERVAL_MS, SerialDataBits,
         SerialDebugConfig, SerialFlowControl, SerialParity, SerialStopBits, TcpDebugConfig,
         TcpDebugMode, UdpDebugConfig,
@@ -301,6 +301,7 @@ impl EventEmitter {
         direction: CommunicationDirection,
         endpoint: impl Into<String>,
         payload: Vec<u8>,
+        payload_format: Option<PayloadFormat>,
         note: Option<String>,
     ) {
         self.records.push(CommunicationRecord {
@@ -308,6 +309,7 @@ impl EventEmitter {
             direction,
             endpoint: endpoint.into(),
             payload,
+            payload_format,
             note,
         });
         self.flush(false);
@@ -459,6 +461,7 @@ fn run_tcp_client(
                 &connection.endpoint,
                 read_buffer[..count].to_vec(),
                 None,
+                None,
             ),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
             Err(error) => {
@@ -483,7 +486,9 @@ fn handle_tcp_client_commands(
     loop {
         match receiver.try_recv() {
             Ok(CommunicationCommand::Stop) => return false,
-            Ok(CommunicationCommand::Send { payload, .. }) => {
+            Ok(CommunicationCommand::Send {
+                payload, format, ..
+            }) => {
                 if payload.is_empty() {
                     continue;
                 }
@@ -495,6 +500,7 @@ fn handle_tcp_client_commands(
                     CommunicationDirection::Outgoing,
                     &connection.endpoint,
                     payload,
+                    Some(format),
                     None,
                 );
             }
@@ -560,6 +566,7 @@ fn run_tcp_server(
                             CommunicationDirection::Status,
                             address.to_string(),
                             Vec::new(),
+                            None,
                             Some("已达到 32 个客户端上限，拒绝新连接".into()),
                         );
                         continue;
@@ -569,6 +576,7 @@ fn run_tcp_server(
                             CommunicationDirection::Status,
                             address.to_string(),
                             Vec::new(),
+                            None,
                             Some(format!("客户端初始化失败：{error}")),
                         );
                         continue;
@@ -600,11 +608,15 @@ fn run_tcp_server(
                     running = false;
                     break;
                 }
-                Ok(CommunicationCommand::Send { payload, target }) => {
+                Ok(CommunicationCommand::Send {
+                    payload,
+                    target,
+                    format,
+                }) => {
                     if payload.is_empty() {
                         continue;
                     }
-                    if !queue_server_payload(&mut clients, &payload, target, emitter) {
+                    if !queue_server_payload(&mut clients, &payload, target, format, emitter) {
                         running = false;
                         break;
                     }
@@ -629,6 +641,7 @@ fn run_tcp_server(
                         CommunicationDirection::Status,
                         &client.endpoint,
                         Vec::new(),
+                        None,
                         Some(format!("TCP 写入失败：{error}")),
                     );
                     disconnected.push(index);
@@ -645,6 +658,7 @@ fn run_tcp_server(
                         &client.endpoint,
                         read_buffer[..count].to_vec(),
                         None,
+                        None,
                     );
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
@@ -653,6 +667,7 @@ fn run_tcp_server(
                         CommunicationDirection::Status,
                         &client.endpoint,
                         Vec::new(),
+                        None,
                         Some(format!("TCP 读取失败：{error}")),
                     );
                     disconnected.push(index);
@@ -683,6 +698,7 @@ fn queue_server_payload(
     clients: &mut [TcpConnection],
     payload: &[u8],
     target: CommunicationSendTarget,
+    format: PayloadFormat,
     emitter: &mut EventEmitter,
 ) -> bool {
     let mut matched = false;
@@ -700,6 +716,7 @@ fn queue_server_payload(
             CommunicationDirection::Outgoing,
             &client.endpoint,
             payload.to_vec(),
+            Some(format),
             None,
         );
     }
@@ -708,6 +725,7 @@ fn queue_server_payload(
             CommunicationDirection::Status,
             "TCP",
             Vec::new(),
+            None,
             Some("没有可用的发送目标".into()),
         );
     }
@@ -871,12 +889,17 @@ fn run_udp(
                     running = false;
                     break;
                 }
-                Ok(CommunicationCommand::Send { payload, target }) => {
+                Ok(CommunicationCommand::Send {
+                    payload,
+                    target,
+                    format,
+                }) => {
                     if payload.len() > MAX_UDP_PAYLOAD_BYTES {
                         emitter.record(
                             CommunicationDirection::Status,
                             "UDP",
                             Vec::new(),
+                            None,
                             Some("UDP 单次载荷不能超过 65507 字节".into()),
                         );
                         continue;
@@ -890,6 +913,7 @@ fn run_udp(
                             CommunicationDirection::Status,
                             "UDP",
                             Vec::new(),
+                            None,
                             Some("未配置默认远端，也未选择接收来源".into()),
                         );
                         continue;
@@ -899,18 +923,21 @@ fn run_udp(
                             CommunicationDirection::Outgoing,
                             destination.to_string(),
                             payload,
+                            Some(format),
                             None,
                         ),
                         Ok(count) => emitter.record(
                             CommunicationDirection::Status,
                             destination.to_string(),
                             Vec::new(),
+                            None,
                             Some(format!("UDP 仅发送 {count} 字节")),
                         ),
                         Err(error) => emitter.record(
                             CommunicationDirection::Status,
                             destination.to_string(),
                             Vec::new(),
+                            None,
                             Some(format!("UDP 发送失败：{error}")),
                         ),
                     }
@@ -929,6 +956,7 @@ fn run_udp(
                     CommunicationDirection::Incoming,
                     source.to_string(),
                     buffer[..count].to_vec(),
+                    None,
                     None,
                 ),
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
@@ -1012,7 +1040,9 @@ fn run_serial(
                     running = false;
                     break;
                 }
-                Ok(CommunicationCommand::Send { payload, .. }) => {
+                Ok(CommunicationCommand::Send {
+                    payload, format, ..
+                }) => {
                     if payload.is_empty() {
                         continue;
                     }
@@ -1027,6 +1057,7 @@ fn run_serial(
                         CommunicationDirection::Outgoing,
                         &config.port_name,
                         payload,
+                        Some(format),
                         None,
                     );
                 }
@@ -1042,6 +1073,7 @@ fn run_serial(
                         CommunicationDirection::Status,
                         &config.port_name,
                         Vec::new(),
+                        None,
                         Some(format!("RTS 已{}", if enabled { "置位" } else { "复位" })),
                     );
                 }
@@ -1057,6 +1089,7 @@ fn run_serial(
                         CommunicationDirection::Status,
                         &config.port_name,
                         Vec::new(),
+                        None,
                         Some(format!("DTR 已{}", if enabled { "置位" } else { "复位" })),
                     );
                 }
@@ -1076,6 +1109,7 @@ fn run_serial(
                 CommunicationDirection::Incoming,
                 &config.port_name,
                 buffer[..count].to_vec(),
+                None,
                 None,
             ),
             Err(error) if serial_read_should_wait(error.kind()) => {}
@@ -1190,6 +1224,7 @@ mod tests {
             CommunicationDirection::Incoming,
             "loopback",
             vec![1, 2, 3],
+            None,
             None,
         );
         emitter.flush(true);

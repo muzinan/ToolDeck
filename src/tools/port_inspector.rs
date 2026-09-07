@@ -132,10 +132,21 @@ impl ToolModule for PortInspectorTool {
             let pid_width = if compact_controls { 90.0 } else { 118.0 };
             let process_width = if compact_controls { 140.0 } else { 176.0 };
             let field_gap = if compact_controls { ui::SPACE_8 } else { ui::SPACE_12 };
-            ui.horizontal_top(|ui| {
-                ui.vertical(|ui| {
-                    ui.add_space(10.0);
+            let query_width = if compact_controls { 70.0 } else { 76.0 };
+            let protocol_width = segment_width * 3.0;
+            let field_widths = [
+                protocol_width,
+                address_width,
+                port_width,
+                pid_width,
+                process_width,
+                query_width,
+            ];
+            ui::responsive_parameter_row(ui, &field_widths, field_gap, |ui| {
+                ui::parameter_group(ui, protocol_width, |ui| {
+                    ui.allocate_space(egui::vec2(protocol_width, 16.0));
                     ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
                         for (label, value) in [
                             ("全部", None),
                             ("TCP", Some(NetworkProtocol::Tcp)),
@@ -150,32 +161,59 @@ impl ToolModule for PortInspectorTool {
                         }
                     });
                 });
-                ui.add_space(field_gap);
-                render_filter_input(
-                    ui,
-                    "地址",
-                    &mut self.address_filter,
-                    "例如：127.0.0.1",
-                    address_width,
-                );
-                ui.add_space(field_gap);
-                render_filter_input(ui, "端口", &mut self.exact_port, "例如：8080", port_width);
-                ui.add_space(field_gap);
-                render_filter_input(ui, "PID", &mut self.pid_filter, "例如：1234", pid_width);
-                ui.add_space(field_gap);
-                render_filter_input(
-                    ui,
-                    "进程",
-                    &mut self.process_filter,
-                    "例如：chrome.exe",
-                    process_width,
-                );
-                ui.add_space(field_gap);
-                ui.vertical(|ui| {
-                    ui.add_space(10.0);
-                    let query_width = if compact_controls { 70.0 } else { 76.0 };
-                    if ui::primary_button_sized(ui, "查询", [query_width, ui::CONTROL_HEIGHT])
-                        .clicked()
+
+                ui::parameter_group(ui, address_width, |ui| {
+                    ui.add_sized(
+                        [address_width, 16.0],
+                        egui::Label::new(RichText::new("地址").size(12.0).color(palette.weak)),
+                    );
+                    ui.add_sized(
+                        [address_width, ui::CONTROL_HEIGHT],
+                        ui::text_input(&mut self.address_filter, "例如: 127.0.0.1"),
+                    );
+                });
+
+                ui::parameter_group(ui, port_width, |ui| {
+                    ui.add_sized(
+                        [port_width, 16.0],
+                        egui::Label::new(RichText::new("端口").size(12.0).color(palette.weak)),
+                    );
+                    ui.add_sized(
+                        [port_width, ui::CONTROL_HEIGHT],
+                        ui::text_input(&mut self.exact_port, "例如: 8080"),
+                    );
+                });
+
+                ui::parameter_group(ui, pid_width, |ui| {
+                    ui.add_sized(
+                        [pid_width, 16.0],
+                        egui::Label::new(RichText::new("PID").size(12.0).color(palette.weak)),
+                    );
+                    ui.add_sized(
+                        [pid_width, ui::CONTROL_HEIGHT],
+                        ui::text_input(&mut self.pid_filter, "例如: 1234"),
+                    );
+                });
+
+                ui::parameter_group(ui, process_width, |ui| {
+                    ui.add_sized(
+                        [process_width, 16.0],
+                        egui::Label::new(RichText::new("进程").size(12.0).color(palette.weak)),
+                    );
+                    ui.add_sized(
+                        [process_width, ui::CONTROL_HEIGHT],
+                        ui::text_input(&mut self.process_filter, "例如: chrome.exe"),
+                    );
+                });
+
+                ui::parameter_group(ui, query_width, |ui| {
+                    ui.allocate_space(egui::vec2(query_width, 16.0));
+                    if ui::primary_button_sized(
+                        ui,
+                        "查询",
+                        [query_width, ui::CONTROL_HEIGHT],
+                    )
+                    .clicked()
                     {
                         actions.push(AppAction::RefreshPorts);
                     }
@@ -196,11 +234,11 @@ impl ToolModule for PortInspectorTool {
                 }
                 let action_width = 176.0;
                 ui.add_space((ui.available_width() - action_width).max(0.0));
-                if ui::secondary_button(ui, if self.paused { "继续" } else { "暂停" }).clicked() {
+                if ui::secondary_button(ui, if self.paused { "▶ 继续" } else { "❚❚ 暂停" }).clicked() {
                     self.paused = !self.paused;
                 }
                 ui.add_space(ui::SPACE_8);
-                if ui::secondary_button(ui, "导出 CSV").clicked() {
+                if ui::secondary_button(ui, "⤤ 导出 CSV").clicked() {
                     let rows = self.filtered_rows();
                     actions.push(AppAction::ExportPortsCsv {
                         content: endpoints_csv(&rows),
@@ -455,6 +493,7 @@ impl PortInspectorTool {
         }
         self.last_refresh = Some(Instant::now());
         self.last_refresh_label = Some("14:25:10".into());
+        self.interval = RefreshInterval::Off;
         if let Some(endpoint) = self.endpoints.get(1) {
             self.selected_endpoint = Some(endpoint_report_line(endpoint));
             self.selected_process_pid = Some(endpoint.pid);
@@ -574,7 +613,7 @@ impl PortInspectorTool {
             ui.label(RichText::new("精确端口必须是 1 到 65535 的整数").color(ui::danger_text(ui)));
         }
         ui.add_space(ui::SPACE_12);
-        let table_height = (ui.ctx().screen_rect().height() * 0.40).clamp(360.0, 450.0);
+        let table_height = (ui.ctx().screen_rect().height() * 0.34).clamp(280.0, 360.0);
         ui::table_card(ui, |ui| {
             egui::ScrollArea::vertical()
                 .id_salt("port-inspector-table-scroll")
@@ -621,6 +660,7 @@ impl PortInspectorTool {
 }
 
 /// 绘制筛选项的标签与输入框，保证所有字段在同一标签基线和控件基线上对齐。
+#[allow(dead_code)]
 fn render_filter_input(
     ui: &mut egui::Ui,
     label: &str,
@@ -637,7 +677,7 @@ fn render_filter_input(
 
 /// 绘制端口页的单一统计条，使端点统计保持连续而非拆分为独立信息卡。
 fn render_port_statistics(ui: &mut egui::Ui, statistics: [(&str, usize); 4]) {
-    const HEIGHT: f32 = 78.0;
+    const HEIGHT: f32 = 68.0;
     let palette = ui::palette_for_ui(ui);
     let (response, painter) = ui.allocate_painter(
         egui::vec2(ui.available_width(), HEIGHT),
@@ -666,23 +706,27 @@ fn render_port_statistics(ui: &mut egui::Ui, statistics: [(&str, usize); 4]) {
             );
         }
         painter.text(
-            egui::pos2(cell_center, rect.top() + 15.0),
-            egui::Align2::CENTER_TOP,
+            egui::pos2(cell_center, rect.top() + 14.0),
+            egui::Align2::CENTER_CENTER,
             label,
             egui::FontId::proportional(13.0),
-            palette.text,
+            palette.weak,
         );
         painter.text(
-            egui::pos2(cell_center, rect.top() + 40.0),
+            egui::pos2(cell_center, rect.top() + 43.0),
             egui::Align2::CENTER_CENTER,
             value.to_string(),
-            egui::FontId::monospace(28.0),
+            egui::FontId::monospace(22.0),
             palette.accent,
         );
     }
 }
 
 /// 构造视觉审查专用端点，不参与运行时的系统端口读取和过滤数据来源。
+#[allow(
+    clippy::too_many_arguments,
+    reason = "视觉审查端点字段在调用点完整列出以便逐行核对"
+)]
 fn review_endpoint(
     protocol: NetworkProtocol,
     ip_version: IpVersion,
@@ -716,8 +760,8 @@ fn render_port_rows(
     selected_endpoint: &mut Option<String>,
 ) {
     const COLUMN_WIDTHS: [f32; 8] = [70.0, 160.0, 88.0, 160.0, 88.0, 150.0, 78.0, 180.0];
-    const HEADER_HEIGHT: f32 = 40.0;
-    const ROW_HEIGHT: f32 = 37.0;
+    const HEADER_HEIGHT: f32 = 28.0;
+    const ROW_HEIGHT: f32 = 32.0;
     let item_spacing = ui.spacing().item_spacing;
     ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
     let table_width = ui.available_width();
@@ -841,9 +885,17 @@ fn render_port_rows(
         paint_single_cell(
             &row.painter,
             table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 0),
-            &proto_cell,
+            proto_cell,
             egui::FontId::monospace(12.5),
             ui.visuals().text_color(),
+        );
+        ui::show_clipped_text_tooltip(
+            ui,
+            table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 0),
+            ("port-cell", index, 0),
+            proto_cell,
+            egui::FontId::monospace(12.5),
+            (table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 0).width() - 16.0).max(0.0),
         );
         // 本地端点
         paint_single_cell(
@@ -853,12 +905,29 @@ fn render_port_rows(
             egui::FontId::monospace(13.0),
             ui.visuals().text_color(),
         );
+        ui::show_clipped_text_tooltip(
+            ui,
+            table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 1),
+            ("port-cell", index, 1),
+            &endpoint.local_address,
+            egui::FontId::monospace(13.0),
+            (table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 1).width() - 16.0).max(0.0),
+        );
+        let local_port = endpoint.local_port.to_string();
         paint_single_cell(
             &row.painter,
             table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 2),
-            &endpoint.local_port.to_string(),
+            &local_port,
             egui::FontId::monospace(13.0),
             ui.visuals().text_color(),
+        );
+        ui::show_clipped_text_tooltip(
+            ui,
+            table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 2),
+            ("port-cell", index, 2),
+            &local_port,
+            egui::FontId::monospace(13.0),
+            (table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 2).width() - 16.0).max(0.0),
         );
         let remote_address = if endpoint.remote_address.is_empty() {
             "-"
@@ -876,12 +945,29 @@ fn render_port_rows(
                 ui.visuals().text_color()
             },
         );
+        ui::show_clipped_text_tooltip(
+            ui,
+            table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 3),
+            ("port-cell", index, 3),
+            remote_address,
+            egui::FontId::monospace(13.0),
+            (table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 3).width() - 16.0).max(0.0),
+        );
+        let remote_port = endpoint.remote_port.unwrap_or(0).to_string();
         paint_single_cell(
             &row.painter,
             table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 4),
-            &endpoint.remote_port.unwrap_or(0).to_string(),
+            &remote_port,
             egui::FontId::monospace(13.0),
             ui.visuals().weak_text_color(),
+        );
+        ui::show_clipped_text_tooltip(
+            ui,
+            table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 4),
+            ("port-cell", index, 4),
+            &remote_port,
+            egui::FontId::monospace(13.0),
+            (table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 4).width() - 16.0).max(0.0),
         );
 
         // 状态
@@ -898,6 +984,14 @@ fn render_port_rows(
                 palette.text
             },
         );
+        ui::show_clipped_text_tooltip(
+            ui,
+            state_rect,
+            ("port-cell", index, 5),
+            state_text,
+            egui::FontId::monospace(13.0),
+            (table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 5).width() - 16.0).max(0.0),
+        );
 
         // PID
         paint_single_cell(
@@ -906,6 +1000,14 @@ fn render_port_rows(
             &pid_cell,
             egui::FontId::monospace(13.0),
             palette.weak,
+        );
+        ui::show_clipped_text_tooltip(
+            ui,
+            table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 6),
+            ("port-cell", index, 6),
+            &pid_cell,
+            egui::FontId::monospace(13.0),
+            (table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 6).width() - 16.0).max(0.0),
         );
 
         // 进程名链接
@@ -941,6 +1043,14 @@ fn render_port_rows(
             process_name,
             egui::FontId::proportional(13.5),
             process_color,
+        );
+        ui::show_clipped_text_tooltip(
+            ui,
+            process_rect,
+            ("port-cell", index, 7),
+            process_name,
+            egui::FontId::proportional(13.5),
+            (table_cell_rect(row.response.rect, &COLUMN_WIDTHS, 7).width() - 16.0).max(0.0),
         );
         if process_response.clicked() {
             process_response.request_focus();

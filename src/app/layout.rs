@@ -1,7 +1,7 @@
 //! 应用外壳与工具页面的响应式布局规则。
 
 /// 顶部全局栏高度，单位为 egui point。
-pub(super) const TOP_BAR_HEIGHT: f32 = 72.0;
+pub(super) const TOP_BAR_HEIGHT: f32 = 54.0;
 
 /// 宽窗口统一导航栏内容轨道宽度，单位为 egui point。
 ///
@@ -12,13 +12,13 @@ pub(super) const UNIFIED_SIDEBAR_WIDTH: f32 = 290.0;
 pub(super) const COMPACT_SIDEBAR_WIDTH: f32 = 72.0;
 
 /// 分类入口固定高度，图标与交互区域不随文字变化。
-pub(super) const CATEGORY_ROW_HEIGHT: f32 = 50.0;
+pub(super) const CATEGORY_ROW_HEIGHT: f32 = 42.0;
 
-/// 首页入口独占侧栏首行，和设计稿中的主导航轨道保持一致。
-pub(super) const HOME_ROW_HEIGHT: f32 = 66.0;
+/// 首页与主导航入口固定高度，和抽屉分类行与工具行保持一致。
+pub(super) const HOME_ROW_HEIGHT: f32 = 38.0;
 
 /// 工具入口固定高度，避免字体回退导致导航抖动。
-pub(super) const TOOL_ROW_HEIGHT: f32 = 48.0;
+pub(super) const TOOL_ROW_HEIGHT: f32 = 40.0;
 
 /// 保留该阈值供布局测试覆盖；统一导航不再收起为分类图标列。
 #[cfg(test)]
@@ -29,6 +29,7 @@ pub(super) const COMPACT_NAV_BREAKPOINT: f32 = 980.0;
 pub(super) const RESULT_HEIGHT_RATIO: f32 = 0.58;
 
 /// 主内容列的最大宽度，适应宽屏与多列数据表格。
+#[allow(dead_code)]
 pub(super) const MAX_CONTENT_WIDTH: f32 = 1600.0;
 
 /// 外壳导航模式。
@@ -89,28 +90,42 @@ pub(super) fn result_height(available_height: f32, minimum: f32, maximum: f32) -
     (available_height * RESULT_HEIGHT_RATIO).clamp(minimum, maximum)
 }
 
-/// 根据父容器宽度计算内容列宽度。
+/// 根据父容器宽度计算内容列宽度，充分利用宽屏与多列数据表格。
+#[allow(dead_code)]
 pub(super) const fn content_width(available_width: f32) -> f32 {
-    if available_width < MAX_CONTENT_WIDTH {
+    if available_width > 0.0 {
         available_width
     } else {
-        MAX_CONTENT_WIDTH
+        0.0
     }
+}
+
+/// 计算应用层界面缩放系数。
+///
+/// 自动模式固定返回 `1.0`，由 eframe 将该系数与 Windows 原生 DPI 比例组合。
+/// 手动模式仅应用用户明确选择的附加缩放，避免按分辨率再次放大导致界面裁切。
+pub(super) fn calculate_adaptive_zoom(user_scale: Option<f32>, review_mode: bool) -> f32 {
+    if review_mode {
+        return 1.0;
+    }
+
+    user_scale.unwrap_or(1.0)
 }
 #[cfg(test)]
 mod tests {
     use super::{
         CATEGORY_ROW_HEIGHT, COMPACT_NAV_BREAKPOINT, COMPACT_SIDEBAR_WIDTH, HOME_ROW_HEIGHT,
-        MAX_CONTENT_WIDTH, NavigationLayout, TOOL_ROW_HEIGHT, UNIFIED_SIDEBAR_WIDTH,
+        NavigationLayout, TOOL_ROW_HEIGHT, UNIFIED_SIDEBAR_WIDTH, calculate_adaptive_zoom,
         content_track_width, content_width, navigation_layout, persistent_navigation_width,
         result_height, tool_row_regions,
     };
 
     #[test]
     fn content_width_is_bounded_without_negative_space() {
-        assert_eq!(content_width(2_000.0), MAX_CONTENT_WIDTH);
+        assert_eq!(content_width(2_000.0), 2_000.0);
         assert_eq!(content_width(720.0), 720.0);
         assert_eq!(content_width(0.0), 0.0);
+        assert_eq!(content_width(-10.0), 0.0);
     }
 
     #[test]
@@ -152,8 +167,15 @@ mod tests {
         let (icon, text, badge) = tool_row_regions(UNIFIED_SIDEBAR_WIDTH - 24.0);
         assert!(icon.end <= text.start);
         assert!(text.end <= badge.start);
-        assert_eq!(CATEGORY_ROW_HEIGHT, 50.0);
-        assert_eq!(HOME_ROW_HEIGHT, 66.0);
-        assert_eq!(TOOL_ROW_HEIGHT, 48.0);
+        assert_eq!(CATEGORY_ROW_HEIGHT, 42.0);
+        assert_eq!(HOME_ROW_HEIGHT, 38.0);
+        assert_eq!(TOOL_ROW_HEIGHT, 40.0);
+    }
+
+    #[test]
+    fn automatic_zoom_defers_to_native_dpi() {
+        assert_eq!(calculate_adaptive_zoom(None, false), 1.0);
+        assert_eq!(calculate_adaptive_zoom(Some(1.25), false), 1.25);
+        assert_eq!(calculate_adaptive_zoom(Some(1.75), true), 1.0);
     }
 }

@@ -144,6 +144,7 @@ pub struct AppSettings {
     pub context_menu_enabled: bool,
     pub favorite_tools: Vec<String>,
     pub presets: Vec<SafeToolPreset>,
+    pub ui_scale: Option<f32>,
 }
 
 impl Default for AppSettings {
@@ -153,6 +154,7 @@ impl Default for AppSettings {
             context_menu_enabled: false,
             favorite_tools: Vec::new(),
             presets: Vec::new(),
+            ui_scale: None,
         }
     }
 }

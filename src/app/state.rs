@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(super) enum Page {
     Home,
     Tool(String),

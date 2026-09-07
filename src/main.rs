@@ -22,7 +22,7 @@ use windows::{
     core::PCWSTR,
 };
 
-const APP_NAME: &str = "Windows Toolbox";
+const APP_NAME: &str = concat!("ToolDeck v", env!("CARGO_PKG_VERSION"));
 
 fn main() -> ExitCode {
     panic::set_hook(Box::new(|info| {

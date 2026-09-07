@@ -2,7 +2,7 @@
 //! 该模块拥有 HUD 顶栏、统一工具侧栏、固定深色主题、设置、后台任务协作与 Tool Invocation 路由。
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::mpsc::Receiver,
     time::{Duration, Instant},
@@ -10,7 +10,7 @@ use std::{
 
 use eframe::{
     egui,
-    egui::{Color32, RichText, Vec2},
+    egui::{Color32, RichText},
 };
 
 use crate::{
@@ -68,8 +68,10 @@ struct RecentToolVisit {
 pub struct ToolboxApp {
     registry: ToolRegistry,
     page: Page,
+    content_scroll_to_top: bool,
     search: String,
     active_category: ToolCategory,
+    expanded_categories: HashSet<ToolCategory>,
     compact_sidebar_open: bool,
     settings_store: SettingsStore,
     settings: AppSettings,
@@ -147,11 +149,15 @@ impl ToolboxApp {
             _ => None,
         }
         .map_or(ToolCategory::Diagnostic, |tool| tool.descriptor().category);
+        let mut expanded_categories = HashSet::new();
+        expanded_categories.insert(active_category);
         Ok(Self {
             registry,
             page,
+            content_scroll_to_top: true,
             search: String::new(),
             active_category,
+            expanded_categories,
             compact_sidebar_open: false,
             settings_store,
             settings,
@@ -192,24 +198,24 @@ impl ToolboxApp {
                 _ => None,
             })
         });
-        if let Some(screenshot) = screenshot {
-            if let Some(path) = self.review_screenshot_path.take() {
-                let rgba = screenshot
-                    .pixels
-                    .iter()
-                    .flat_map(|pixel| pixel.to_array())
-                    .collect::<Vec<_>>();
-                image::save_buffer(
-                    path,
-                    &rgba,
-                    screenshot.size[0] as u32,
-                    screenshot.size[1] as u32,
-                    image::ColorType::Rgba8,
-                )
-                .expect("UI 审查截图写入失败");
-                context.send_viewport_cmd(egui::ViewportCommand::Close);
-                return;
-            }
+        if let Some(screenshot) = screenshot
+            && let Some(path) = self.review_screenshot_path.take()
+        {
+            let rgba = screenshot
+                .pixels
+                .iter()
+                .flat_map(|pixel| pixel.to_array())
+                .collect::<Vec<_>>();
+            image::save_buffer(
+                path,
+                &rgba,
+                screenshot.size[0] as u32,
+                screenshot.size[1] as u32,
+                image::ColorType::Rgba8,
+            )
+            .expect("UI 审查截图写入失败");
+            context.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
         }
 
         if self.review_screenshot_path.is_none() {
@@ -229,8 +235,9 @@ impl ToolboxApp {
                     )));
                 }
             }
-            7 => context
+            7..=119 => context
                 .send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default())),
+            120 => panic!("UI 审查截图在限定时间内未返回"),
             _ => {}
         }
         self.review_frame_count = self.review_frame_count.saturating_add(1);
@@ -304,22 +311,6 @@ impl ToolboxApp {
     /// 绘制顶部全局栏，集中放置品牌、搜索与全局入口。
     fn render_top_hud(&mut self, context: &egui::Context) -> Vec<AppAction> {
         let mut actions = Vec::new();
-        let (section, current) = match &self.page {
-            Page::Home => (None, "首页".to_owned()),
-            Page::Settings => (None, "设置".to_owned()),
-            Page::About => (None, "关于".to_owned()),
-            Page::Tool(tool_id) => self
-                .registry
-                .get(tool_id)
-                .map(|tool| {
-                    let descriptor = tool.descriptor();
-                    (
-                        Some(format!("{}工具", descriptor.category.label())),
-                        descriptor.name.to_owned(),
-                    )
-                })
-                .unwrap_or((None, "首页".to_owned())),
-        };
         let palette = ui::theme_palette(if context.style().visuals.dark_mode {
             egui::Theme::Dark
         } else {
@@ -332,33 +323,22 @@ impl ToolboxApp {
                 egui::Frame::new()
                     .fill(palette.panel)
                     .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
-                    .inner_margin(egui::Margin::symmetric(12, 7)),
+                    .inner_margin(egui::Margin::symmetric(16, 10)),
             )
             .show(context, |ui| {
                 ui.horizontal(|ui| {
-                    let (logo_rect, _) =
-                        ui.allocate_exact_size(Vec2::splat(28.0), egui::Sense::hover());
-                    ui::paint_app_icon(
-                        ui.painter(),
-                        logo_rect.shrink(5.0),
-                        ui::AppIcon::Developer,
-                        palette.accent,
-                    );
-                    ui.add_space(ui::SPACE_4);
                     ui.label(
                         RichText::new("ToolDeck")
                             .strong()
-                            .size(16.0)
+                            .size(18.0)
                             .color(palette.text),
                     );
-                    ui.add_space(ui::SPACE_12);
-                    ui.separator();
-                    ui.add_space(ui::SPACE_12);
-                    if let Some(section) = section {
-                        ui.label(RichText::new(section).size(13.0).color(palette.weak));
-                        ui.label(RichText::new("›").size(15.0).color(palette.weak));
-                    }
-                    ui.label(RichText::new(current).size(13.5).color(palette.text));
+                    ui.add_space(ui::SPACE_24);
+                    let search_width = 340.0;
+                    ui.add_sized(
+                        [search_width, 32.0],
+                        ui::text_input(&mut self.search, "🔍 搜索工具"),
+                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui::icon_button(
                             ui,
@@ -380,11 +360,6 @@ impl ToolboxApp {
                         {
                             actions.push(AppAction::NavigateTo("settings".into()));
                         }
-                        let search_width = (ui.available_width() - 16.0).clamp(180.0, 320.0);
-                        ui.add_sized(
-                            [search_width, ui::CONTROL_HEIGHT],
-                            ui::text_input(&mut self.search, "搜索工具"),
-                        );
                     });
                 });
             });
@@ -474,9 +449,16 @@ impl ToolboxApp {
                                                 },
                                             );
                                         });
-                                        ui.add_space(ui::SPACE_8);
-                                        ui.separator();
-                                        ui.add_space(ui::SPACE_8);
+                                        for descriptor in
+                                            self.registry.in_category(self.active_category)
+                                        {
+                                            let is_selected =
+                                                self.page == Page::Tool(descriptor.id.into());
+                                            if drawer_tool_nav_button(ui, &descriptor, is_selected) {
+                                                actions.push(AppAction::NavigateTo(descriptor.id.into()));
+                                                self.compact_sidebar_open = false;
+                                            }
+                                        }
                                     } else {
                                         if app_nav_button(
                                             ui,
@@ -487,79 +469,68 @@ impl ToolboxApp {
                                         ) {
                                             actions.push(AppAction::NavigateTo("home".into()));
                                         }
-                                        ui.allocate_ui_with_layout(
-                                            egui::vec2(
-                                                ui.available_width(),
-                                                layout::CATEGORY_ROW_HEIGHT,
-                                            ),
-                                            egui::Layout::left_to_right(egui::Align::Center),
-                                            |ui| {
-                                                ui.add_space(ui::SPACE_12);
-                                                category_segmented_control(
-                                                    ui,
-                                                    &categories,
-                                                    &mut self.active_category,
-                                                );
-                                                ui.add_space(ui::SPACE_12);
-                                            },
-                                        );
-                                        ui.separator();
-                                    }
+                                        ui.add_space(ui::SPACE_4);
 
-                                    egui::Frame::new()
-                                        .inner_margin(egui::Margin::symmetric(16, 0))
-                                        .show(ui, |ui| {
-                                            if !self.search.trim().is_empty() {
-                                                ui.label(
-                                                    RichText::new("搜索结果").strong().size(13.0),
-                                                );
-                                                ui.add_space(ui::SPACE_8);
-                                                if descriptors.is_empty() {
+                                        if !self.search.trim().is_empty() {
+                                            egui::Frame::new()
+                                                .inner_margin(egui::Margin::symmetric(16, 0))
+                                                .show(ui, |ui| {
                                                     ui.label(
-                                                        RichText::new("没有匹配的工具")
-                                                            .size(12.5)
-                                                            .color(ui.visuals().weak_text_color()),
+                                                        RichText::new("搜索结果").strong().size(13.0),
                                                     );
-                                                }
-                                                for descriptor in &descriptors {
-                                                    if tool_nav_button(
-                                                        ui,
-                                                        descriptor,
-                                                        self.page
-                                                            == Page::Tool(descriptor.id.into()),
-                                                    ) {
-                                                        actions.push(AppAction::NavigateTo(
-                                                            descriptor.id.into(),
-                                                        ));
-                                                        if nav_layout
-                                                            == layout::NavigationLayout::Compact
-                                                        {
-                                                            self.compact_sidebar_open = false;
+                                                    ui.add_space(ui::SPACE_8);
+                                                    if descriptors.is_empty() {
+                                                        ui.label(
+                                                            RichText::new("没有匹配的工具")
+                                                                .size(12.5)
+                                                                .color(ui.visuals().weak_text_color()),
+                                                        );
+                                                    }
+                                                    for descriptor in &descriptors {
+                                                        if tool_nav_button(
+                                                            ui,
+                                                            descriptor,
+                                                            self.page
+                                                                == Page::Tool(descriptor.id.into()),
+                                                        ) {
+                                                            actions.push(AppAction::NavigateTo(
+                                                                descriptor.id.into(),
+                                                            ));
                                                         }
                                                     }
+                                                });
+                                        } else {
+                                            for category in &categories {
+                                                let is_expanded =
+                                                    self.expanded_categories.contains(category);
+                                                if category_drawer_row(ui, *category, is_expanded) {
+                                                    if is_expanded {
+                                                        self.expanded_categories.remove(category);
+                                                    } else {
+                                                        self.expanded_categories.insert(*category);
+                                                    }
                                                 }
-                                            } else {
-                                                for descriptor in
-                                                    self.registry.in_category(self.active_category)
-                                                {
-                                                    if tool_nav_button(
-                                                        ui,
-                                                        &descriptor,
-                                                        self.page
-                                                            == Page::Tool(descriptor.id.into()),
-                                                    ) {
-                                                        actions.push(AppAction::NavigateTo(
-                                                            descriptor.id.into(),
-                                                        ));
-                                                        if nav_layout
-                                                            == layout::NavigationLayout::Compact
-                                                        {
-                                                            self.compact_sidebar_open = false;
+                                                if is_expanded {
+                                                    for descriptor in
+                                                        self.registry.in_category(*category)
+                                                    {
+                                                        let is_selected = self.page
+                                                            == Page::Tool(descriptor.id.into());
+                                                        if drawer_tool_nav_button(
+                                                            ui,
+                                                            &descriptor,
+                                                            is_selected,
+                                                        ) {
+                                                            actions.push(AppAction::NavigateTo(
+                                                                descriptor.id.into(),
+                                                            ));
+                                                            self.active_category = *category;
                                                         }
                                                     }
                                                 }
                                             }
-                                        });
+                                        }
+                                    }
                                 });
                         },
                     );
@@ -569,7 +540,7 @@ impl ToolboxApp {
                         "设置",
                         ui::AppIcon::Settings,
                         self.page == Page::Settings,
-                        layout::TOOL_ROW_HEIGHT,
+                        layout::HOME_ROW_HEIGHT,
                     ) {
                         actions.push(AppAction::NavigateTo("settings".into()));
                     }
@@ -600,6 +571,7 @@ impl ToolboxApp {
                             .clicked()
                             {
                                 self.active_category = category;
+                                self.expanded_categories.insert(category);
                                 self.compact_sidebar_open = true;
                             }
                         }
@@ -624,6 +596,7 @@ impl ToolboxApp {
 
     fn render_content(&mut self, context: &egui::Context) -> Vec<AppAction> {
         let page = self.page.clone();
+        let scroll_to_top = std::mem::take(&mut self.content_scroll_to_top);
         let palette = ui::theme_palette(if context.style().visuals.dark_mode {
             egui::Theme::Dark
         } else {
@@ -632,70 +605,69 @@ impl ToolboxApp {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .inner_margin(egui::Margin::symmetric(0, 1)),
+                    .fill(palette.panel)
+                    .inner_margin(egui::Margin::ZERO),
             )
             .show(context, |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt(content::MAIN_SCROLL_ID)
+                let mut scroll_area = egui::ScrollArea::vertical()
+                    .id_salt((content::MAIN_SCROLL_ID, page.clone()))
                     .auto_shrink([false, false])
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+                if scroll_to_top {
+                    scroll_area = scroll_area.vertical_scroll_offset(0.0);
+                }
+                scroll_area
                     .show(ui, |ui| {
                         let content_w = self.review_width.map_or_else(
-                            || layout::content_width(ui.available_width()),
+                            || ui.available_width(),
                             |window_width| {
                                 let navigation = layout::persistent_navigation_width(
                                     layout::navigation_layout(window_width),
                                 );
-                                layout::content_width(
-                                    (window_width - navigation - ui::PAGE_PADDING * 2.0)
-                                        .min(ui.available_width())
-                                        .max(320.0),
-                                )
+                                (window_width - navigation)
+                                    .min(ui.available_width())
+                                    .max(320.0)
                             },
                         );
                         let available_h = ui.available_height().max(500.0);
-                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(content_w, available_h),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| {
-                                    egui::Frame::new()
-                                        .fill(palette.surface)
-                                        .stroke(egui::Stroke::new(1.0_f32, palette.border))
-                                        .corner_radius(egui::CornerRadius::same(6))
-                                        .inner_margin(egui::Margin::same(
-                                            ui::PAGE_PADDING as i8,
-                                        ))
-                                        .show(ui, |ui| {
-                                            ui.set_min_height(
-                                                (available_h - ui::PAGE_PADDING * 2.0).max(0.0),
-                                            );
-                                            match page {
-                                                Page::Home => self.render_home(ui),
-                                                Page::Tool(id) => self
-                                                    .registry
-                                                    .get_mut(&id)
-                                                    .map(|tool| {
-                                                        tool.ui(
-                                                            ui,
-                                                            ToolUiContext {
-                                                                review_mode: self.review_mode,
-                                                                review_variant: self.review_variant,
-                                                            },
-                                                        )
-                                                    })
-                                                    .unwrap_or_else(|| {
-                                                        vec![AppAction::NavigateTo("home".into())]
-                                                    }),
-                                                Page::Settings => self.render_settings(ui),
-                                                Page::About => self.render_about(ui),
-                                            }
-                                        })
-                                        .inner
-                                },
-                            )
-                            .inner
-                        })
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(content_w, available_h),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                egui::Frame::new()
+                                    .fill(palette.panel)
+                                    .inner_margin(egui::Margin::same(
+                                        ui::PAGE_PADDING as i8,
+                                    ))
+                                    .show(ui, |ui| {
+                                        ui.set_min_width(ui.available_width());
+                                        ui.set_min_height(
+                                            (available_h - ui::PAGE_PADDING * 2.0).max(0.0),
+                                        );
+                                        match page {
+                                            Page::Home => self.render_home(ui),
+                                            Page::Tool(id) => self
+                                                .registry
+                                                .get_mut(&id)
+                                                .map(|tool| {
+                                                    tool.ui(
+                                                        ui,
+                                                        ToolUiContext {
+                                                            review_mode: self.review_mode,
+                                                            review_variant: self.review_variant,
+                                                        },
+                                                    )
+                                                })
+                                                .unwrap_or_else(|| {
+                                                    vec![AppAction::NavigateTo("home".into())]
+                                                }),
+                                            Page::Settings => self.render_settings(ui),
+                                            Page::About => self.render_about(ui),
+                                        }
+                                    })
+                                    .inner
+                            },
+                        )
                         .inner
                     })
                     .inner
@@ -781,6 +753,46 @@ impl ToolboxApp {
             });
         });
 
+        ui::section(ui, |ui| {
+            ui.label(RichText::new("显示与高分屏").strong().size(15.0));
+            ui.add_space(ui::SPACE_8);
+            ui.horizontal(|ui| {
+                ui.label("界面缩放");
+                let current_label = match self.settings.ui_scale {
+                    None => "自动（跟随系统 DPI）".to_string(),
+                    Some(s) => format!("{:.0}%", s * 100.0),
+                };
+                egui::ComboBox::from_id_salt("ui-scale-setting")
+                    .selected_text(current_label)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(
+                                self.settings.ui_scale.is_none(),
+                                "自动（跟随系统 DPI）",
+                            )
+                            .clicked()
+                        {
+                            self.settings.ui_scale = None;
+                        }
+                        for scale in [1.0, 1.1, 1.25, 1.35, 1.5, 1.75, 2.0] {
+                            let label = format!("{:.0}%", scale * 100.0);
+                            let selected = self
+                                .settings
+                                .ui_scale
+                                .is_some_and(|s| (s - scale).abs() < 0.01);
+                            if ui.selectable_label(selected, label).clicked() {
+                                self.settings.ui_scale = Some(scale);
+                            }
+                        }
+                    });
+                ui.add_space(ui::SPACE_12);
+                ui.label(
+                    RichText::new("支持快捷键 Ctrl + / Ctrl - 调整缩放，Ctrl 0 跟随系统 DPI")
+                        .color(palette.weak),
+                );
+            });
+        });
+
         let mut presets_changed = false;
         let mut remove_preset = None;
         let mut next_editor = self.preset_editor;
@@ -791,8 +803,10 @@ impl ToolboxApp {
                     if self.settings.presets.len() < 12
                         && ui::secondary_button(ui, "新建预设").clicked()
                     {
-                        let mut preset = SafeToolPreset::default();
-                        preset.updated_at = Some(settings_timestamp());
+                        let preset = SafeToolPreset {
+                            updated_at: Some(settings_timestamp()),
+                            ..Default::default()
+                        };
                         self.settings.presets.push(preset);
                         next_editor = self.settings.presets.len().checked_sub(1);
                         presets_changed = true;
@@ -806,36 +820,47 @@ impl ToolboxApp {
             );
             ui.add_space(ui::SPACE_12);
             ui::table_card(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                egui::Grid::new("settings-preset-table")
-                    .striped(true)
-                    .min_row_height(62.0)
-                    .spacing([ui::SPACE_16, 0.0])
+                let table_width = ui.available_width();
+                let minimum_table_width = if table_width < 880.0 {
+                    820.0
+                } else {
+                    table_width
+                };
+                egui::ScrollArea::horizontal()
+                    .id_salt("settings-preset-table-scroll")
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        for header in ["名称", "适用工具", "参数摘要", "修改时间", "操作"] {
-                            ui.label(RichText::new(header).strong().color(palette.weak));
-                        }
-                        ui.end_row();
-                        for (index, preset) in self.settings.presets.iter().enumerate() {
-                            ui.label(RichText::new(preset_display_name(preset)).strong());
-                            ui.label(preset.tool.label());
-                            ui.label(RichText::new(preset_summary(preset)).monospace());
-                            ui.label(
-                                RichText::new(
-                                    preset.updated_at.as_deref().unwrap_or("未修改"),
-                                )
-                                .monospace(),
-                            );
-                            ui.horizontal(|ui| {
-                                if ui::small_action_button(ui, "编辑").clicked() {
-                                    next_editor = Some(index);
+                        ui.set_min_width(minimum_table_width);
+                        egui::Grid::new("settings-preset-table")
+                            .striped(true)
+                    .min_row_height(52.0)
+                            .spacing([ui::SPACE_16, 0.0])
+                            .show(ui, |ui| {
+                                for header in ["名称", "适用工具", "参数摘要", "修改时间", "操作"] {
+                                    ui.label(RichText::new(header).strong().color(palette.weak));
                                 }
-                                if ui::danger_button(ui, "删除").clicked() {
-                                    remove_preset = Some(index);
+                                ui.end_row();
+                                for (index, preset) in self.settings.presets.iter().enumerate() {
+                                    ui.label(RichText::new(preset_display_name(preset)).strong());
+                                    ui.label(preset.tool.label());
+                                    ui.label(RichText::new(preset_summary(preset)).monospace());
+                                    ui.label(
+                                        RichText::new(
+                                            preset.updated_at.as_deref().unwrap_or("未修改"),
+                                        )
+                                        .monospace(),
+                                    );
+                                    ui.horizontal(|ui| {
+                                        if ui::small_action_button(ui, "编辑").clicked() {
+                                            next_editor = Some(index);
+                                        }
+                                        if ui::danger_button(ui, "删除").clicked() {
+                                            remove_preset = Some(index);
+                                        }
+                                    });
+                                    ui.end_row();
                                 }
                             });
-                            ui.end_row();
-                        }
                     });
             });
         });
@@ -885,7 +910,13 @@ impl ToolboxApp {
                         .selected_text(preset.display_format.label())
                         .show_ui(ui, |ui| {
                             for value in SafePresetFormat::ALL {
-                                changed |= ui.selectable_value(&mut preset.display_format, value, value.label()).changed();
+                                changed |= ui
+                                    .selectable_value(
+                                        &mut preset.display_format,
+                                        value,
+                                        value.label(),
+                                    )
+                                    .changed();
                             }
                         });
                     changed |= ui.checkbox(&mut preset.append_crlf, "追加 CRLF").changed();
@@ -899,7 +930,12 @@ impl ToolboxApp {
                     ui.label("次数");
                     changed |= ui.add(egui::DragValue::new(&mut preset.attempts).range(1..=100)).changed();
                     ui.label("波特率");
-                    changed |= ui.add(egui::DragValue::new(&mut preset.serial_baud_rate).range(300..=4_000_000)).changed();
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut preset.serial_baud_rate)
+                                .range(300..=4_000_000),
+                        )
+                        .changed();
                 });
                 if changed {
                     preset.updated_at = Some(settings_timestamp());
@@ -973,7 +1009,7 @@ impl ToolboxApp {
         );
 
         ui::page_heading(ui, "关于 ToolDeck", "面向 Windows 的网络诊断与通信调试工具箱");
-        ui.add_space(48.0);
+        ui.add_space(32.0);
 
         ui::card(ui, |ui| {
             ui.set_min_width(ui.available_width());
@@ -1022,7 +1058,7 @@ impl ToolboxApp {
         ui.add_space(ui::SPACE_8);
         ui::card(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.set_min_height(48.0);
+            ui.set_min_height(40.0);
             ui.horizontal_wrapped(|ui| {
                 for (icon, label) in [
                     (ui::AppIcon::Network, "系统 DNS"),
@@ -1213,19 +1249,24 @@ impl ToolboxApp {
     }
 
     fn navigate_to(&mut self, target: &str) {
-        self.page = match target {
+        let next_page = match target {
             "home" => Page::Home,
             "settings" => Page::Settings,
             "about" => Page::About,
             tool_id if self.registry.get(tool_id).is_some() => {
                 if let Some(descriptor) = self.registry.get(tool_id).map(|tool| tool.descriptor()) {
                     self.active_category = descriptor.category;
+                    self.expanded_categories.insert(descriptor.category);
                 }
                 self.record_recent_tool(tool_id);
                 Page::Tool(tool_id.to_owned())
             }
             _ => Page::Home,
         };
+        if should_reset_content_scroll(&self.page, &next_page) {
+            self.page = next_page;
+            self.content_scroll_to_top = true;
+        }
     }
 
     fn apply_invocation(&mut self, context: &egui::Context, invocation: ToolInvocation) {
@@ -1499,6 +1540,49 @@ fn log_runtime_error(error: &AppError) {
 /// 仅接受同工具最新请求的事件；旧终态既不路由，也不能清除新请求的忙碌状态依据。
 impl eframe::App for ToolboxApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.review_mode {
+            let (zoom_in, zoom_out, zoom_reset) = context.input(|i| {
+                let ctrl = i.modifiers.command || i.modifiers.ctrl;
+                let plus = ctrl && (i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals));
+                let minus = ctrl && i.key_pressed(egui::Key::Minus);
+                let zero = ctrl && i.key_pressed(egui::Key::Num0);
+                (plus, minus, zero)
+            });
+
+            if zoom_reset {
+                self.settings.ui_scale = None;
+                self.notice = Some(Notice {
+                    message: "界面缩放已重置为跟随系统 DPI".into(),
+                    tone: NoticeTone::Success,
+                    expires_at: Instant::now() + Duration::from_secs(2),
+                });
+            } else if zoom_in {
+                let current = context.zoom_factor();
+                let next = (((current + 0.1) * 10.0).round() / 10.0).min(2.5);
+                self.settings.ui_scale = Some(next);
+                self.notice = Some(Notice {
+                    message: format!("界面缩放: {:.0}%", next * 100.0),
+                    tone: NoticeTone::Success,
+                    expires_at: Instant::now() + Duration::from_secs(2),
+                });
+            } else if zoom_out {
+                let current = context.zoom_factor();
+                let next = (((current - 0.1) * 10.0).round() / 10.0).max(0.8);
+                self.settings.ui_scale = Some(next);
+                self.notice = Some(Notice {
+                    message: format!("界面缩放: {:.0}%", next * 100.0),
+                    tone: NoticeTone::Success,
+                    expires_at: Instant::now() + Duration::from_secs(2),
+                });
+            }
+
+            let adaptive_zoom =
+                layout::calculate_adaptive_zoom(self.settings.ui_scale, self.review_mode);
+            if (context.zoom_factor() - adaptive_zoom).abs() > 0.01 {
+                context.set_zoom_factor(adaptive_zoom);
+            }
+        }
+
         self.drain_background_messages(context);
         let pending = std::mem::take(&mut self.pending_invocations);
         for invocation in pending {
@@ -1534,7 +1618,7 @@ pub fn native_options(settings: &AppSettings, persistence_path: PathBuf) -> efra
     let _ = settings;
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1200.0, 780.0])
+            .with_inner_size([1536.0, 1024.0])
             .with_min_inner_size([980.0, 640.0])
             .with_clamp_size_to_monitor_size(true),
         persist_window: true,
@@ -1727,7 +1811,7 @@ fn home_active_session_row(
 
 fn home_favorite_item(ui: &mut egui::Ui, descriptor: &ToolDescriptor) -> (bool, bool) {
     let width = ui.available_width();
-    let (response, painter) = ui.allocate_painter(egui::vec2(width, 80.0), egui::Sense::click());
+    let (response, painter) = ui.allocate_painter(egui::vec2(width, 68.0), egui::Sense::click());
     let palette = ui::palette_for_ui(ui);
     let fill = if response.hovered() {
         palette.hover
@@ -1736,13 +1820,13 @@ fn home_favorite_item(ui: &mut egui::Ui, descriptor: &ToolDescriptor) -> (bool, 
     };
     painter.rect_filled(response.rect, egui::CornerRadius::same(4), fill);
     let icon_rect = egui::Rect::from_min_size(
-        response.rect.left_top() + egui::vec2(10.0, 14.0),
-        egui::vec2(28.0, 28.0),
+        response.rect.left_top() + egui::vec2(8.0, 11.0),
+        egui::vec2(24.0, 24.0),
     );
     ui::paint_tool_icon(&painter, icon_rect, descriptor.icon, palette.accent);
     let text_rect = egui::Rect::from_min_max(
-        response.rect.left_top() + egui::vec2(48.0, 10.0),
-        response.rect.right_bottom() - egui::vec2(8.0, 8.0),
+        response.rect.left_top() + egui::vec2(40.0, 8.0),
+        response.rect.right_bottom() - egui::vec2(8.0, 6.0),
     );
     let clipped = painter.with_clip_rect(text_rect);
     clipped.text(
@@ -1753,10 +1837,10 @@ fn home_favorite_item(ui: &mut egui::Ui, descriptor: &ToolDescriptor) -> (bool, 
         palette.text,
     );
     clipped.text(
-        text_rect.left_top() + egui::vec2(0.0, 22.0),
+        text_rect.left_top() + egui::vec2(0.0, 19.0),
         egui::Align2::LEFT_TOP,
         descriptor.description,
-        egui::FontId::proportional(11.5),
+        egui::FontId::proportional(11.0),
         palette.weak,
     );
     let mut remove = false;
@@ -1928,6 +2012,11 @@ fn category_app_icon(category: ToolCategory) -> ui::AppIcon {
     }
 }
 
+/// 仅在页面身份实际变化时重置主内容滚动位置，避免重复点击当前入口造成跳动。
+fn should_reset_content_scroll(current: &Page, next: &Page) -> bool {
+    current != next
+}
+
 fn app_nav_button(
     ui: &mut egui::Ui,
     label: &str,
@@ -1950,11 +2039,11 @@ fn app_nav_button(
     } else {
         Color32::TRANSPARENT
     };
-    painter.rect_filled(response.rect, egui::CornerRadius::same(6), fill);
+    painter.rect_filled(response.rect, egui::CornerRadius::same(4), fill);
     if response.has_focus() {
         painter.rect_stroke(
             response.rect.shrink(1.0),
-            egui::CornerRadius::same(6),
+            egui::CornerRadius::same(4),
             egui::Stroke::new(1.5_f32, palette.accent),
             egui::StrokeKind::Middle,
         );
@@ -1974,9 +2063,9 @@ fn app_nav_button(
     } else {
         palette.text
     };
-    let icon_rect = egui::Rect::from_min_size(
-        response.rect.left_top() + egui::vec2(12.0, 10.0),
-        egui::vec2(26.0, 26.0),
+    let icon_rect = egui::Rect::from_center_size(
+        response.rect.left_center() + egui::vec2(24.0, 0.0),
+        egui::vec2(18.0, 18.0),
     );
     ui::paint_app_icon(
         &painter,
@@ -1990,11 +2079,11 @@ fn app_nav_button(
     );
     let galley = painter.layout_no_wrap(
         label.to_owned(),
-        egui::FontId::proportional(16.0),
+        egui::FontId::proportional(15.0),
         text_color,
     );
     painter.galley(
-        response.rect.left_center() + egui::vec2(48.0, -galley.size().y * 0.5),
+        response.rect.left_center() + egui::vec2(44.0, -galley.size().y * 0.5),
         galley,
         text_color,
     );
@@ -2008,39 +2097,162 @@ fn app_nav_button(
             }))
 }
 
-/// 绘制三个固定分类标签；宽窗口只显示当前分类的工具，避免旧双层导航重复占用空间。
-fn category_segmented_control(
+/// 绘制纵向手风琴抽屉分类标题行，右侧显示展开/收起箭头。
+fn category_drawer_row(
     ui: &mut egui::Ui,
-    categories: &[ToolCategory],
-    active_category: &mut ToolCategory,
-) {
+    category: ToolCategory,
+    expanded: bool,
+) -> bool {
+    let available = ui.available_width();
+    let (response, painter) = ui.allocate_painter(
+        egui::vec2(available, layout::CATEGORY_ROW_HEIGHT),
+        egui::Sense::click(),
+    );
     let palette = ui::palette_for_ui(ui);
-    let count = categories.len().max(1) as f32;
-    let item_width = (ui.available_width() / count).floor().max(52.0);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        for category in categories {
-            let selected = *active_category == *category;
-            let response = ui.add_sized(
-                [item_width, layout::CATEGORY_ROW_HEIGHT],
-                egui::Button::selectable(
-                    selected,
-                    RichText::new(category.label()).size(16.0),
-                ),
-            );
-            if response.clicked() {
-                *active_category = *category;
-            }
-            if response.has_focus() {
-                ui.painter().rect_stroke(
-                    response.rect.shrink(1.0),
-                    egui::CornerRadius::same(4),
-                    egui::Stroke::new(1.5_f32, palette.accent),
-                    egui::StrokeKind::Middle,
-                );
-            }
-        }
-    });
+    let fill = if response.hovered() {
+        palette.hover
+    } else {
+        Color32::TRANSPARENT
+    };
+    painter.rect_filled(response.rect, egui::CornerRadius::same(4), fill);
+    if response.has_focus() {
+        painter.rect_stroke(
+            response.rect.shrink(1.0),
+            egui::CornerRadius::same(4),
+            egui::Stroke::new(1.5_f32, palette.accent),
+            egui::StrokeKind::Middle,
+        );
+    }
+    let text_color = if response.hovered() {
+        palette.text
+    } else {
+        palette.text.gamma_multiply(0.95)
+    };
+    let galley = painter.layout_no_wrap(
+        category.label().to_owned(),
+        egui::FontId::proportional(15.0),
+        text_color,
+    );
+    painter.galley(
+        response.rect.left_center() + egui::vec2(16.0, -galley.size().y * 0.5),
+        galley,
+        text_color,
+    );
+
+    let chevron_center = egui::pos2(response.rect.right() - 20.0, response.rect.center().y);
+    let chevron_stroke = egui::Stroke::new(
+        1.6_f32,
+        if response.hovered() || expanded {
+            palette.text
+        } else {
+            palette.weak
+        },
+    );
+    if expanded {
+        painter.line_segment(
+            [chevron_center + egui::vec2(-4.0, 2.0), chevron_center + egui::vec2(0.0, -2.0)],
+            chevron_stroke,
+        );
+        painter.line_segment(
+            [chevron_center + egui::vec2(0.0, -2.0), chevron_center + egui::vec2(4.0, 2.0)],
+            chevron_stroke,
+        );
+    } else {
+        painter.line_segment(
+            [chevron_center + egui::vec2(-4.0, -2.0), chevron_center + egui::vec2(0.0, 2.0)],
+            chevron_stroke,
+        );
+        painter.line_segment(
+            [chevron_center + egui::vec2(0.0, 2.0), chevron_center + egui::vec2(4.0, -2.0)],
+            chevron_stroke,
+        );
+    }
+
+    if response.clicked() {
+        response.request_focus();
+    }
+    response.clicked()
+        || (response.has_focus()
+            && ui.input(|input| {
+                input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
+            }))
+}
+
+/// 绘制抽屉展开后的子工具按钮，左侧带有青蓝选中指示条与缩进文本，完全还原 18-unified-navigation-v2.png。
+fn drawer_tool_nav_button(
+    ui: &mut egui::Ui,
+    descriptor: &ToolDescriptor,
+    selected: bool,
+) -> bool {
+    let available = ui.available_width();
+    let (response, painter) = ui.allocate_painter(
+        egui::vec2(available, layout::TOOL_ROW_HEIGHT),
+        egui::Sense::click(),
+    );
+    let palette = ui::palette_for_ui(ui);
+    let fill = if selected {
+        palette
+            .accent
+            .gamma_multiply(if ui.visuals().dark_mode { 0.16 } else { 0.12 })
+    } else if response.hovered() {
+        palette.hover
+    } else {
+        Color32::TRANSPARENT
+    };
+    painter.rect(
+        response.rect,
+        egui::CornerRadius::same(4),
+        fill,
+        if selected {
+            egui::Stroke::new(1.0_f32, palette.accent.gamma_multiply(0.35))
+        } else {
+            egui::Stroke::NONE
+        },
+        egui::StrokeKind::Middle,
+    );
+    if response.has_focus() {
+        painter.rect_stroke(
+            response.rect.shrink(1.0),
+            egui::CornerRadius::same(4),
+            egui::Stroke::new(1.5_f32, palette.accent),
+            egui::StrokeKind::Middle,
+        );
+    }
+    if selected {
+        painter.rect_filled(
+            egui::Rect::from_min_size(
+                response.rect.left_top() + egui::vec2(0.0, 4.0),
+                egui::vec2(3.0, response.rect.height() - 8.0),
+            ),
+            egui::CornerRadius::same(2),
+            palette.accent,
+        );
+    }
+    let text_color = if selected {
+        palette.accent
+    } else if response.hovered() {
+        palette.text
+    } else {
+        palette.text.gamma_multiply(0.88)
+    };
+    let galley = painter.layout_no_wrap(
+        descriptor.name.to_owned(),
+        egui::FontId::proportional(14.0),
+        text_color,
+    );
+    painter.galley(
+        response.rect.left_center() + egui::vec2(36.0, -galley.size().y * 0.5),
+        galley,
+        text_color,
+    );
+    if response.clicked() {
+        response.request_focus();
+    }
+    response.clicked()
+        || (response.has_focus()
+            && ui.input(|input| {
+                input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
+            }))
 }
 
 fn tool_nav_button(ui: &mut egui::Ui, descriptor: &ToolDescriptor, selected: bool) -> bool {
@@ -2095,7 +2307,7 @@ fn tool_nav_button(ui: &mut egui::Ui, descriptor: &ToolDescriptor, selected: boo
     };
     let icon_rect = egui::Rect::from_min_size(
         response.rect.left_top() + egui::vec2(12.0, 11.0),
-        egui::vec2(26.0, 26.0),
+        egui::vec2(22.0, 22.0),
     );
     ui::paint_tool_icon(
         &painter,
@@ -2109,7 +2321,7 @@ fn tool_nav_button(ui: &mut egui::Ui, descriptor: &ToolDescriptor, selected: boo
         text_color,
     );
     painter.galley(
-        response.rect.left_center() + egui::vec2(48.0, -galley.size().y * 0.5),
+        response.rect.left_center() + egui::vec2(42.0, -galley.size().y * 0.5),
         galley,
         text_color,
     );
@@ -2172,7 +2384,7 @@ fn home_recent_header(ui: &mut egui::Ui) {
     let widths = home_recent_columns(ui.available_width());
     let total_width: f32 = widths.iter().sum();
     let (response, painter) = ui.allocate_painter(
-        egui::vec2(total_width, 34.0),
+        egui::vec2(total_width, 28.0),
         egui::Sense::hover(),
     );
     let palette = ui::palette_for_ui(ui);
@@ -2209,7 +2421,7 @@ fn home_recent_row(
     let widths = home_recent_columns(ui.available_width());
     let total_width: f32 = widths.iter().sum();
     let (response, painter) = ui.allocate_painter(
-        egui::vec2(total_width, 42.0),
+        egui::vec2(total_width, 34.0),
         egui::Sense::click(),
     );
     let palette = ui::palette_for_ui(ui);
@@ -2267,7 +2479,7 @@ fn home_recent_row(
     let tool_cell = home_table_cell(response.rect, &widths, 0);
     let icon_rect = egui::Rect::from_min_size(
         tool_cell.left_center() + egui::vec2(8.0, -11.0),
-        egui::vec2(22.0, 22.0),
+        egui::vec2(20.0, 20.0),
     );
     ui::paint_tool_icon(&painter, icon_rect, descriptor.icon, palette.accent);
     paint_home_table_text(
@@ -2283,6 +2495,22 @@ fn home_recent_row(
         &summary,
         egui::FontId::monospace(12.0),
         palette.text,
+    );
+    ui::show_clipped_text_tooltip(
+        ui,
+        home_table_cell(response.rect, &widths, 0),
+        ("home-recent-tool", index),
+        descriptor.name,
+        egui::FontId::proportional(13.0),
+        (widths[0] - 46.0).max(0.0),
+    );
+    ui::show_clipped_text_tooltip(
+        ui,
+        home_table_cell(response.rect, &widths, 1),
+        ("home-recent-summary", index),
+        &summary,
+        egui::FontId::monospace(12.0),
+        (widths[1] - 16.0).max(0.0),
     );
     let status_cell = home_table_cell(response.rect, &widths, 2);
     let dot_center = status_cell.left_center() + egui::vec2(12.0, 0.0);
@@ -2300,6 +2528,22 @@ fn home_recent_row(
         &visit.visited_at,
         egui::FontId::monospace(12.0),
         palette.text,
+    );
+    ui::show_clipped_text_tooltip(
+        ui,
+        status_cell,
+        ("home-recent-status", index),
+        &status,
+        egui::FontId::proportional(12.5),
+        (widths[2] - 28.0).max(0.0),
+    );
+    ui::show_clipped_text_tooltip(
+        ui,
+        home_table_cell(response.rect, &widths, 3),
+        ("home-recent-time", index),
+        &visit.visited_at,
+        egui::FontId::monospace(12.0),
+        (widths[3] - 16.0).max(0.0),
     );
     if response.clicked() {
         response.request_focus();
@@ -2392,7 +2636,7 @@ fn home_tool_index_item(
     is_favorite: bool,
 ) -> (bool, bool) {
     let width = ui.available_width();
-    let (response, painter) = ui.allocate_painter(egui::vec2(width, 36.0), egui::Sense::click());
+    let (response, painter) = ui.allocate_painter(egui::vec2(width, 32.0), egui::Sense::click());
     let palette = ui::palette_for_ui(ui);
     let fill = if response.hovered() {
         palette.hover
@@ -2401,8 +2645,8 @@ fn home_tool_index_item(
     };
     painter.rect_filled(response.rect, egui::CornerRadius::same(4), fill);
     let icon_rect = egui::Rect::from_min_size(
-        response.rect.left_top() + egui::vec2(8.0, 7.0),
-        egui::vec2(22.0, 22.0),
+        response.rect.left_top() + egui::vec2(7.0, 6.0),
+        egui::vec2(20.0, 20.0),
     );
     ui::paint_tool_icon(&painter, icon_rect, descriptor.icon, palette.accent);
     painter
@@ -2411,7 +2655,7 @@ fn home_tool_index_item(
             response.rect.left_center() + egui::vec2(38.0, 0.0),
             egui::Align2::LEFT_CENTER,
             descriptor.name,
-            egui::FontId::proportional(13.5),
+            egui::FontId::proportional(13.0),
             palette.text,
         );
     let mut toggle_favorite = false;
@@ -2428,9 +2672,12 @@ fn home_tool_index_item(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
-    use super::{actions, navigation, preset_summary, settings_review_presets};
+    use super::{
+        Page, actions, content, navigation, preset_summary, settings_review_presets,
+        should_reset_content_scroll,
+    };
     use crate::{
         settings::SafePresetTool,
         tools::build_registry,
@@ -2449,6 +2696,28 @@ mod tests {
         navigation::normalize_favorite_tools(&descriptors, &mut favorites);
 
         assert_eq!(favorites, ["file-lock", "process-inspector"]);
+    }
+
+    #[test]
+    fn content_scroll_state_is_isolated_and_reset_only_between_pages() {
+        let pages = [
+            Page::Home,
+            Page::Settings,
+            Page::About,
+            Page::Tool("ping".into()),
+            Page::Tool("tcp-debug".into()),
+        ];
+        let scroll_ids = pages
+            .iter()
+            .cloned()
+            .map(|page| eframe::egui::Id::new((content::MAIN_SCROLL_ID, page)))
+            .collect::<HashSet<_>>();
+        assert_eq!(scroll_ids.len(), pages.len());
+        assert!(!should_reset_content_scroll(&Page::Home, &Page::Home));
+        assert!(should_reset_content_scroll(
+            &Page::Home,
+            &Page::Tool("ping".into())
+        ));
     }
 
     #[test]
@@ -2509,5 +2778,20 @@ mod tests {
             true
         ));
         assert!(latest.is_empty());
+    }
+
+    #[test]
+    fn category_drawers_track_navigation_and_toggle() {
+        let mut expanded = std::collections::HashSet::new();
+        expanded.insert(crate::tools::ToolCategory::Diagnostic);
+
+        // Toggle open Network
+        expanded.insert(crate::tools::ToolCategory::Network);
+        assert!(expanded.contains(&crate::tools::ToolCategory::Network));
+
+        // Toggle close Diagnostic
+        expanded.remove(&crate::tools::ToolCategory::Diagnostic);
+        assert!(!expanded.contains(&crate::tools::ToolCategory::Diagnostic));
+        assert!(expanded.contains(&crate::tools::ToolCategory::Network));
     }
 }

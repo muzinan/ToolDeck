@@ -73,18 +73,58 @@ impl ToolModule for MtrTool {
         ui.add_space(0.0);
 
         ui::card(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("目标主机").size(12.0).color(palette.weak));
+            let finite = self.config.total_rounds.is_some();
+            let mut rounds = self.config.total_rounds.unwrap_or(20);
+            let field_widths = [220.0, 174.0, 136.0, 64.0, 74.0, 74.0, 164.0];
+            ui::responsive_parameter_row(ui, &field_widths, ui::SPACE_8, |ui| {
+                ui::parameter_group(ui, 220.0, |ui| {
+                    ui.add_sized(
+                        [220.0, 16.0],
+                        egui::Label::new(
+                            RichText::new("目标主机").size(12.0).color(palette.weak),
+                        ),
+                    );
                     ui.add_sized(
                         [220.0, ui::CONTROL_HEIGHT],
                         ui::text_input(&mut self.host, "域名或 IP"),
                     );
                 });
-                mtr_family_control(ui, &mut self.config.family, palette);
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("模式").size(12.0).color(palette.weak));
-                    let finite = self.config.total_rounds.is_some();
+
+                ui::parameter_group(ui, 174.0, |ui| {
+                    ui.add_sized(
+                        [174.0, 16.0],
+                        egui::Label::new(
+                            RichText::new("地址族").size(12.0).color(palette.weak),
+                        ),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        for value in [
+                            PingAddressFamily::Auto,
+                            PingAddressFamily::V4,
+                            PingAddressFamily::V6,
+                        ] {
+                            if ui
+                                .add_sized(
+                                    [58.0, ui::CONTROL_HEIGHT],
+                                    egui::Button::selectable(
+                                        self.config.family == value,
+                                        value.label(),
+                                    ),
+                                )
+                                .clicked()
+                            {
+                                self.config.family = value;
+                            }
+                        }
+                    });
+                });
+
+                ui::parameter_group(ui, 136.0, |ui| {
+                    ui.add_sized(
+                        [136.0, 16.0],
+                        egui::Label::new(RichText::new("模式").size(12.0).color(palette.weak)),
+                    );
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
                         if ui
@@ -107,57 +147,91 @@ impl ToolModule for MtrTool {
                         }
                     });
                 });
-                mtr_round_control(ui, &mut self.config.total_rounds, palette);
-                mtr_drag_u32(
-                    ui,
-                    "超时",
-                    &mut self.config.timeout_ms,
-                    100..=5_000,
-                    " ms",
-                    palette,
-                );
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("每跳探测").size(12.0).color(palette.weak));
-                    ui.add(
-                        egui::DragValue::new(&mut self.config.probes_per_hop)
-                            .range(1..=10)
-                            .min_decimals(0),
+
+                ui::parameter_group(ui, 64.0, |ui| {
+                    ui.add_sized(
+                        [64.0, 16.0],
+                        egui::Label::new(RichText::new("轮次").size(12.0).color(palette.weak)),
+                    );
+                    if ui
+                        .add_enabled_ui(finite, |ui| {
+                            ui.add_sized(
+                                [64.0, ui::CONTROL_HEIGHT],
+                                egui::DragValue::new(&mut rounds).range(1..=100),
+                            )
+                        })
+                        .inner
+                        .changed()
+                    {
+                        self.config.total_rounds = Some(rounds);
+                    }
+                });
+
+                ui::parameter_group(ui, 74.0, |ui| {
+                    ui.add_sized(
+                        [74.0, 16.0],
+                        egui::Label::new(RichText::new("超时").size(12.0).color(palette.weak)),
+                    );
+                    ui.add_sized(
+                        [74.0, ui::CONTROL_HEIGHT],
+                        egui::DragValue::new(&mut self.config.timeout_ms)
+                            .range(100..=5_000)
+                            .suffix(" ms"),
                     );
                 });
-                ui.vertical(|ui| {
-                    ui.label(" ");
-                    ui.add_enabled_ui(!self.busy, |ui| {
-                        if ui::primary_button_sized(ui, "开始", [78.0, ui::CONTROL_HEIGHT])
-                            .clicked()
-                        {
-                            match self.config.validate() {
-                                Ok(()) if !self.host.trim().is_empty() => {
-                                    self.validation_error = None;
-                                    actions.push(AppAction::RunMtr {
-                                        host: self.host.trim().to_owned(),
-                                        config: self.config.clone(),
-                                    });
-                                }
-                                Ok(()) => self.validation_error = Some("目标主机不能为空。".into()),
-                                Err(error) => self.validation_error = Some(error),
-                            }
-                        }
-                    });
+
+                ui::parameter_group(ui, 74.0, |ui| {
+                    ui.add_sized(
+                        [74.0, 16.0],
+                        egui::Label::new(
+                            RichText::new("每跳探测").size(12.0).color(palette.weak),
+                        ),
+                    );
+                    ui.add_sized(
+                        [74.0, ui::CONTROL_HEIGHT],
+                        egui::DragValue::new(&mut self.config.probes_per_hop).range(1..=10),
+                    );
                 });
-                ui.vertical(|ui| {
-                    ui.label(" ");
-                    if ui
-                        .add_enabled(
-                            self.busy,
-                            egui::Button::new(
-                                RichText::new("停止").strong().color(palette.danger_text),
+
+                ui::parameter_group(ui, 164.0, |ui| {
+                    ui.allocate_space(egui::vec2(164.0, 16.0));
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = ui::SPACE_8;
+                        ui.add_enabled_ui(!self.busy, |ui| {
+                            if ui::primary_button_sized(
+                                ui,
+                                "开始",
+                                [78.0, ui::CONTROL_HEIGHT],
                             )
-                            .min_size(egui::vec2(78.0, ui::CONTROL_HEIGHT)),
+                            .clicked()
+                            {
+                                match self.config.validate() {
+                                    Ok(()) if !self.host.trim().is_empty() => {
+                                        self.validation_error = None;
+                                        actions.push(AppAction::RunMtr {
+                                            host: self.host.trim().to_owned(),
+                                            config: self.config.clone(),
+                                        });
+                                    }
+                                    Ok(()) => {
+                                        self.validation_error = Some("目标主机不能为空。".into())
+                                    }
+                                    Err(error) => self.validation_error = Some(error),
+                                }
+                            }
+                        });
+                        if ui::danger_outline_button_sized(
+                            ui,
+                            "停止",
+                            [78.0, ui::CONTROL_HEIGHT],
+                            self.busy,
                         )
                         .clicked()
-                    {
-                        actions.push(AppAction::StopMtr);
-                    }
+                            && self.busy
+                        {
+                            actions.push(AppAction::StopMtr);
+                        }
+                    });
                 });
             });
             if let Some(error) = &self.validation_error {
@@ -275,7 +349,7 @@ impl MtrTool {
         };
 
         let active_hops = progress.hops.iter().filter(|hop| hop.sent > 0).count();
-        let table_height = (ui.ctx().screen_rect().height() * 0.28).clamp(250.0, 266.0);
+        let table_height = (ui.ctx().screen_rect().height() * 0.24).clamp(210.0, 236.0);
         ui::card(ui, |ui| {
             ui.horizontal(|ui| {
                 let status_color = if self.busy {
@@ -297,13 +371,13 @@ impl MtrTool {
             });
             ui.add_space(ui::SPACE_4);
             let column_widths = mtr_table_column_widths(ui.available_width());
-            render_mtr_table_header(ui, &column_widths);
             egui::ScrollArea::both()
                 .id_salt("mtr-results-scroll")
                 .max_height(table_height)
                 .min_scrolled_height(table_height)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    render_mtr_table_header(ui, &column_widths);
                     ui.spacing_mut().item_spacing.y = 0.0;
                     for hop in progress.hops.iter().filter(|hop| hop.sent > 0) {
                         render_mtr_table_row(ui, hop, &column_widths, &mut self.selected_hop);
@@ -349,7 +423,7 @@ impl MtrTool {
         self.busy = true;
         self.selected_hop = Some(4);
         let rows = [
-            ("192.0.2.1", 0.0, 0.271, 0.243, 0.203, 0.318, 0.022),
+            ("192.0.2.1", 0.0, 0.271, 0.243, 0.203, 0.319, 0.022),
             ("192.0.2.254", 0.0, 1.372, 1.285, 1.142, 1.632, 0.098),
             ("192.0.2.2", 0.0, 2.831, 2.764, 2.512, 3.121, 0.137),
             ("198.51.100.1", 0.0, 5.217, 5.086, 4.782, 5.612, 0.173),
@@ -452,7 +526,7 @@ impl MtrTool {
                 })
                 .collect::<Vec<_>>();
             let legend_width = 150.0;
-            let trend_chart_height = 190.0;
+            let trend_chart_height = 156.0;
             ui.horizontal(|ui| {
                 ui.allocate_ui_with_layout(
                     egui::vec2(
@@ -497,6 +571,7 @@ impl MtrTool {
     }
 }
 
+#[allow(dead_code)]
 fn mtr_family_control(
     ui: &mut egui::Ui,
     family: &mut PingAddressFamily,
@@ -525,6 +600,7 @@ fn mtr_family_control(
     });
 }
 
+#[allow(dead_code)]
 fn mtr_round_control(ui: &mut egui::Ui, total_rounds: &mut Option<u32>, palette: ui::ThemePalette) {
     ui.vertical(|ui| {
         ui.label(RichText::new("轮次").size(12.0).color(palette.weak));
@@ -544,6 +620,7 @@ fn mtr_round_control(ui: &mut egui::Ui, total_rounds: &mut Option<u32>, palette:
     });
 }
 
+#[allow(dead_code)]
 fn mtr_drag_u32(
     ui: &mut egui::Ui,
     label: &str,
@@ -577,7 +654,7 @@ fn render_mtr_table_header(ui: &mut egui::Ui, column_widths: &[f32; 10]) {
     let palette = ui::palette_for_ui(ui);
     let total_width = column_widths.iter().sum();
     let (response, painter) =
-        ui.allocate_painter(egui::vec2(total_width, 32.0), egui::Sense::hover());
+        ui.allocate_painter(egui::vec2(total_width, 28.0), egui::Sense::hover());
     painter.rect_filled(
         response.rect,
         egui::CornerRadius::ZERO,
@@ -624,7 +701,7 @@ fn render_mtr_table_row(
     let palette = ui::palette_for_ui(ui);
     let total_width = column_widths.iter().sum();
     let (response, painter) =
-        ui.allocate_painter(egui::vec2(total_width, 38.0), egui::Sense::click());
+        ui.allocate_painter(egui::vec2(total_width, 32.0), egui::Sense::click());
     if response.clicked() {
         *selected_hop = Some(hop.hop);
     }
@@ -663,6 +740,14 @@ fn render_mtr_table_row(
             value,
             egui::FontId::monospace(12.0),
             palette.text,
+        );
+        ui::show_clipped_text_tooltip(
+            ui,
+            cell,
+            ("mtr-table-cell", hop.hop, index),
+            value,
+            egui::FontId::monospace(12.0),
+            (cell.width() - 16.0).max(0.0),
         );
         if index > 0 {
             painter.line_segment(

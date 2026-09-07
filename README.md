@@ -1,8 +1,8 @@
 # Windows Toolbox
 
-ToolDeck 是一个面向 Windows 10/11 x64 的原生系统与网络工具工作台。V0.4.1 采用统一的深色专业工作台界面，提供诊断、网络和通信三类十个工具，并继续使用可扩展的 Tool Host + Tool Module 架构。
+ToolDeck 是一个面向 Windows 10/11 x64 的原生系统与网络工具工作台。V0.4.2 采用纵向抽屉手风琴导航与统一的深色专业工作台界面，提供诊断、网络和通信三类十个工具，并继续使用可扩展的 Tool Host + Tool Module 架构。
 
-![ToolDeck v0.4.1 单列深色工作台设计基准](docs/ui/v0.4.1/18-unified-navigation.png)
+![ToolDeck v0.4.2 纵向抽屉工作台设计基准](docs/ui/v0.4.1/18-unified-navigation-v2.png)
 
 ## 当前功能
 
@@ -82,7 +82,7 @@ target\x86_64-pc-windows-msvc\release\windows-toolbox.exe
 ## 权限与限制
 
 - 默认以普通用户权限运行；部分系统进程的信息或结束操作会因访问限制而失败，并向用户明确提示。
-- V0.4.1 通过公开 Toolhelp、WMI/COM、Windows ICMP API、标准套接字和 serialport 访问系统能力；不使用未公开 NT API，也不实现深度句柄扫描、强制关闭 Handle、驱动、注入或权限绕过。
+- V0.4.2 通过公开 Toolhelp、WMI/COM、Windows ICMP API、标准套接字和 serialport 访问系统能力；不使用未公开 NT API，也不实现深度句柄扫描、强制关闭 Handle、驱动、注入或权限绕过。
 - TCP 调试只收发原始字节流，不提供 TLS；UDP 当前不支持 IPv6 广播或 IPv6 组播；串口采用独占打开。
 
 网络工具：

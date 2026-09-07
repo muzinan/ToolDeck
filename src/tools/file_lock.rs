@@ -381,27 +381,27 @@ fn render_file_process_table(
             path_width,
         ];
         let total_width = widths.iter().sum();
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            for (label, width) in [
-                ("进程", widths[0]),
-                ("PID", widths[1]),
-                ("类型", widths[2]),
-                ("访问模式", widths[3]),
-                ("用户", widths[4]),
-                ("路径", widths[5]),
-            ] {
-                ui.add_sized(
-                    [width, 30.0],
-                    egui::Label::new(RichText::new(label).strong()),
-                );
-            }
-        });
-        ui.separator();
         egui::ScrollArea::both()
-            .max_height(270.0)
+            .max_height(220.0)
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    for (label, width) in [
+                        ("进程", widths[0]),
+                        ("PID", widths[1]),
+                        ("类型", widths[2]),
+                        ("访问模式", widths[3]),
+                        ("用户", widths[4]),
+                        ("路径", widths[5]),
+                    ] {
+                        ui.add_sized(
+                            [width, 28.0],
+                            egui::Label::new(RichText::new(label).strong()),
+                        );
+                    }
+                });
+                ui.separator();
                 ui.spacing_mut().item_spacing.y = 0.0;
                 for process in processes {
                     let selected = *selected_pid == Some(process.pid);
@@ -415,35 +415,56 @@ fn render_file_process_table(
                             ui.set_width(total_width);
                             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
                             ui.horizontal(|ui| {
-                                if ui
-                                    .add_sized(
-                                        [widths[0], 38.0],
-                                        egui::Label::new(RichText::new(&process.name))
-                                            .sense(egui::Sense::click()),
-                                    )
-                                    .clicked()
-                                {
+                                let process_response = ui.add_sized(
+                                    [widths[0], 32.0],
+                                    egui::Label::new(RichText::new(&process.name))
+                                        .truncate()
+                                        .sense(egui::Sense::click()),
+                                );
+                                if process_response.clicked() {
                                     *selected_pid = Some(process.pid);
                                 }
+                                ui::show_clipped_text_tooltip(
+                                    ui,
+                                    process_response.rect,
+                                    ("file-lock-cell", process.pid, 0),
+                                    &process.name,
+                                    egui::FontId::proportional(14.0),
+                                    (widths[0] - 8.0).max(0.0),
+                                );
                                 ui.add_sized(
-                                    [widths[1], 38.0],
+                                    [widths[1], 32.0],
                                     egui::Label::new(
                                         RichText::new(process.pid.to_string()).monospace(),
                                     ),
                                 );
-                                ui.add_sized([widths[2], 38.0], egui::Label::new("文件"));
-                                ui.add_sized([widths[3], 38.0], egui::Label::new("读"));
+                                ui.add_sized([widths[2], 32.0], egui::Label::new("文件"));
+                                ui.add_sized([widths[3], 32.0], egui::Label::new("读"));
                                 let owner = process.owner.as_deref().unwrap_or("—");
-                                ui.add_sized(
-                                    [widths[4], 38.0],
+                                let owner_response = ui.add_sized(
+                                    [widths[4], 32.0],
                                     egui::Label::new(RichText::new(owner).monospace()).truncate(),
-                                )
-                                .on_hover_text(owner);
-                                ui.add_sized(
-                                    [widths[5], 38.0],
+                                );
+                                ui::show_clipped_text_tooltip(
+                                    ui,
+                                    owner_response.rect,
+                                    ("file-lock-cell", process.pid, 4),
+                                    owner,
+                                    egui::FontId::monospace(14.0),
+                                    (widths[4] - 8.0).max(0.0),
+                                );
+                                let path_response = ui.add_sized(
+                                    [widths[5], 32.0],
                                     egui::Label::new(RichText::new(target_path).monospace()).truncate(),
-                                )
-                                .on_hover_text(target_path);
+                                );
+                                ui::show_clipped_text_tooltip(
+                                    ui,
+                                    path_response.rect,
+                                    ("file-lock-cell", process.pid, 5),
+                                    target_path,
+                                    egui::FontId::monospace(14.0),
+                                    (widths[5] - 8.0).max(0.0),
+                                );
                             });
                         });
                     if row.response.clicked() {
@@ -476,8 +497,17 @@ fn render_selected_process(
                 ui.end_row();
                 ui.label("可执行文件：");
                 let path = process.exe_path.as_deref().unwrap_or("无法读取");
-                ui.add(egui::Label::new(RichText::new(path).monospace()).truncate())
-                    .on_hover_text(path);
+                let path_response = ui.add(
+                    egui::Label::new(RichText::new(path).monospace()).truncate(),
+                );
+                ui::show_clipped_text_tooltip(
+                    ui,
+                    path_response.rect,
+                    ("file-lock-detail", process.pid),
+                    path,
+                    egui::FontId::monospace(14.0),
+                    (path_response.rect.width() - 8.0).max(0.0),
+                );
                 ui.end_row();
                 ui.label("启动时间：");
                 ui.label(

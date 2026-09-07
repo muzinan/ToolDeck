@@ -345,6 +345,7 @@ pub enum CommunicationCommand {
     Send {
         payload: Vec<u8>,
         target: CommunicationSendTarget,
+        format: PayloadFormat,
     },
     SetRts(bool),
     SetDtr(bool),
@@ -376,12 +377,30 @@ pub struct CommunicationRecord {
     pub direction: CommunicationDirection,
     pub endpoint: String,
     pub payload: Vec<u8>,
+    pub payload_format: Option<PayloadFormat>,
     pub note: Option<String>,
 }
 
 impl CommunicationRecord {
     pub fn payload_bytes(&self) -> usize {
         self.payload.len()
+    }
+
+    /// 根据记录方向确定展示格式；发送记录固定使用发送时格式，接收记录跟随界面选择。
+    pub fn display_format(&self, receive_format: PayloadFormat) -> PayloadFormat {
+        if self.direction == CommunicationDirection::Outgoing {
+            self.payload_format.unwrap_or(receive_format)
+        } else {
+            receive_format
+        }
+    }
+
+    /// 返回界面、搜索、复制和导出共同使用的完整显示内容。
+    pub fn display_content(&self, receive_format: PayloadFormat) -> String {
+        self.note.as_deref().map_or_else(
+            || render_payload(&self.payload, self.display_format(receive_format)),
+            escape_log_field,
+        )
     }
 }
 
@@ -510,7 +529,7 @@ pub fn decode_payload(
     Ok(payload)
 }
 
-/// 按选定格式渲染载荷；文本模式会转义控制字符并标记无效 UTF-8。
+/// 按选定格式渲染载荷；文本模式保留可打印 Unicode，仅转义控制字符并标记无效 UTF-8。
 pub fn render_payload(payload: &[u8], format: PayloadFormat) -> String {
     match format {
         PayloadFormat::Hex => payload
@@ -521,10 +540,19 @@ pub fn render_payload(payload: &[u8], format: PayloadFormat) -> String {
         PayloadFormat::Text => {
             let lossy = String::from_utf8_lossy(payload);
             let invalid = matches!(&lossy, std::borrow::Cow::Owned(_));
-            let escaped = lossy
-                .chars()
-                .flat_map(|character| character.escape_default())
-                .collect::<String>();
+            let escaped = lossy.chars().fold(String::new(), |mut output, character| {
+                match character {
+                    '\r' => output.push_str("\\r"),
+                    '\n' => output.push_str("\\n"),
+                    '\t' => output.push_str("\\t"),
+                    '\0' => output.push_str("\\0"),
+                    value if value.is_control() => {
+                        output.extend(value.escape_default());
+                    }
+                    value => output.push(value),
+                }
+                output
+            });
             if invalid {
                 format!("{escaped} [含无效 UTF-8，已替换显示]")
             } else {
@@ -584,10 +612,7 @@ impl CommunicationLog {
     pub fn export(&self, format: PayloadFormat) -> String {
         let mut output = String::from("时间\t方向\t端点\t字节数\t内容\n");
         for record in &self.records {
-            let content = record
-                .note
-                .as_deref()
-                .map_or_else(|| render_payload(&record.payload, format), escape_log_field);
+            let content = record.display_content(format);
             output.push_str(&format!(
                 "{}\t{}\t{}\t{}\t{}\n",
                 escape_log_field(&record.timestamp),
@@ -626,6 +651,7 @@ mod tests {
             direction: CommunicationDirection::Incoming,
             endpoint: "loopback".into(),
             payload,
+            payload_format: None,
             note: None,
         }
     }
@@ -645,10 +671,62 @@ mod tests {
     }
 
     #[test]
+    fn text_rendering_preserves_printable_unicode_and_escapes_controls() {
+        assert_eq!(
+            render_payload("中文🙂\\path\r\n\t".as_bytes(), PayloadFormat::Text),
+            "中文🙂\\path\\r\\n\\t"
+        );
+        assert!(!render_payload("中文".as_bytes(), PayloadFormat::Text).contains("\\u{"));
+    }
+
+    #[test]
     fn invalid_utf8_is_marked_while_original_bytes_remain_available() {
         let payload = [0x66, 0x80];
         assert!(render_payload(&payload, PayloadFormat::Text).contains("无效 UTF-8"));
         assert_eq!(render_payload(&payload, PayloadFormat::Hex), "66 80");
+    }
+
+    #[test]
+    fn outgoing_records_keep_the_format_used_when_sent() {
+        let outgoing = CommunicationRecord {
+            direction: CommunicationDirection::Outgoing,
+            payload: "中文".as_bytes().to_vec(),
+            payload_format: Some(PayloadFormat::Text),
+            ..record(Vec::new())
+        };
+
+        assert_eq!(outgoing.display_content(PayloadFormat::Hex), "中文");
+        assert_eq!(outgoing.display_format(PayloadFormat::Hex), PayloadFormat::Text);
+    }
+
+    #[test]
+    fn incoming_records_follow_the_current_receive_format() {
+        let incoming = record(b"AB".to_vec());
+
+        assert_eq!(incoming.display_content(PayloadFormat::Text), "AB");
+        assert_eq!(incoming.display_content(PayloadFormat::Hex), "41 42");
+    }
+
+    #[test]
+    fn log_export_uses_each_records_effective_display_format() {
+        let mut log = CommunicationLog::default();
+        log.push_batch(vec![
+            CommunicationRecord {
+                direction: CommunicationDirection::Outgoing,
+                payload: "发送".as_bytes().to_vec(),
+                payload_format: Some(PayloadFormat::Text),
+                ..record(Vec::new())
+            },
+            CommunicationRecord {
+                payload: b"RX".to_vec(),
+                ..record(Vec::new())
+            },
+        ]);
+
+        let export = log.export(PayloadFormat::Hex);
+        assert!(export.contains("发送"));
+        assert!(export.contains("52 58"));
+        assert!(!export.contains("\\u{"));
     }
 
     #[test]

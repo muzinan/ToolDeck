@@ -17,7 +17,7 @@ use crate::{
         CommunicationPeer, CommunicationRecord, CommunicationSendTarget, CommunicationSessionState,
         PayloadFormat, SerialDataBits, SerialDebugConfig, SerialFlowControl, SerialParity,
         SerialPortDescriptor, SerialStopBits, TcpDebugConfig, TcpDebugMode, UdpDebugConfig,
-        UdpMulticastConfig, decode_payload, render_payload,
+        UdpMulticastConfig, decode_payload,
     },
     platform::windows::local_time_hms_millis,
     tools::{
@@ -27,14 +27,25 @@ use crate::{
     ui,
 };
 
-const MAX_LOG_HEIGHT: f32 = 380.0;
-const LOG_HEIGHT_RATIO: f32 = 0.29;
-const COMPACT_LOG_HEIGHT: f32 = 132.0;
+const MAX_LOG_HEIGHT: f32 = 320.0;
+const LOG_HEIGHT_RATIO: f32 = 0.25;
+const COMPACT_LOG_HEIGHT: f32 = 112.0;
 const DESIGN_VIEWPORT_HEIGHT: f32 = 960.0;
-const RECORD_HEADER_HEIGHT: f32 = 34.0;
-const RECORD_ROW_HEIGHT: f32 = 38.0;
-const SERVER_RECORD_HEADER_HEIGHT: f32 = 26.0;
-const SERVER_RECORD_ROW_HEIGHT: f32 = 22.0;
+const RECORD_HEADER_HEIGHT: f32 = 30.0;
+const RECORD_ROW_HEIGHT: f32 = 32.0;
+const SERVER_RECORD_HEADER_HEIGHT: f32 = 24.0;
+const SERVER_RECORD_ROW_HEIGHT: f32 = 20.0;
+const DETAIL_CONTENT_MIN_HEIGHT: f32 = 120.0;
+const DETAIL_CONTENT_MAX_HEIGHT: f32 = 220.0;
+/// 日志摘要、搜索框和全部操作保持单行所需的最小内容宽度，单位为 egui point。
+const LOG_TOOLBAR_SINGLE_ROW_MIN_WIDTH: f32 = 840.0;
+/// TCP 客户端配置参数组沿用现有控件宽度，最后一项为状态及连接操作区。
+const TCP_CLIENT_FIELD_WIDTHS: [f32; 8] =
+    [150.0, 120.0, 156.0, 78.0, 82.0, 60.0, 100.0, 220.0];
+/// TCP 服务端不显示客户端超时与重连参数，因此使用较短的参数组集合。
+const TCP_SERVER_FIELD_WIDTHS: [f32; 5] = [150.0, 120.0, 156.0, 78.0, 220.0];
+/// TCP 服务端日志与客户端列表同时分栏所需的最小内容宽度，单位为 egui point。
+const TCP_SERVER_SPLIT_MIN_WIDTH: f32 = 1_120.0;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum DirectionFilter {
@@ -75,6 +86,7 @@ struct CommonCommunicationState {
     direction_filter: DirectionFilter,
     log_search: String,
     auto_scroll: bool,
+    selected_record: Option<CommunicationRecord>,
     log: CommunicationLog,
     state: CommunicationSessionState,
     session_started_at: Option<Instant>,
@@ -82,6 +94,9 @@ struct CommonCommunicationState {
     error: Option<String>,
     generation: u64,
     peers: Vec<CommunicationPeer>,
+    echo_send: bool,
+    byte_totals_override: Option<(usize, usize)>,
+    packet_totals_override: Option<(usize, usize)>,
 }
 
 impl Default for CommonCommunicationState {
@@ -97,6 +112,7 @@ impl Default for CommonCommunicationState {
             direction_filter: DirectionFilter::All,
             log_search: String::new(),
             auto_scroll: true,
+            selected_record: None,
             log: CommunicationLog::default(),
             state: CommunicationSessionState::Stopped,
             session_started_at: None,
@@ -104,6 +120,9 @@ impl Default for CommonCommunicationState {
             error: None,
             generation: 0,
             peers: Vec::new(),
+            echo_send: false,
+            byte_totals_override: None,
+            packet_totals_override: None,
         }
     }
 }
@@ -173,6 +192,7 @@ impl CommonCommunicationState {
                     direction: CommunicationDirection::Status,
                     endpoint: envelope.kind.tool_id().into(),
                     payload: Vec::new(),
+                    payload_format: None,
                     note: Some(detail.clone()),
                 }]);
                 if matches!(
@@ -193,6 +213,7 @@ impl CommonCommunicationState {
         }
     }
 
+    #[allow(dead_code)]
     fn render_status(
         &self,
         ui: &mut egui::Ui,
@@ -263,76 +284,31 @@ impl CommonCommunicationState {
             RECORD_ROW_HEIGHT
         };
         ui::card(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("数据日志")
-                        .strong()
-                        .size(14.5)
-                        .color(palette.text),
-                );
-                if kind == CommunicationKind::Udp {
-                    let (incoming, outgoing) = self.packet_totals();
-                    let (received, sent) = self.byte_totals();
-                    ui.label(format!("数据包：{}", incoming + outgoing));
-                    ui.label(
-                        RichText::new(format!("接收：{incoming}（{}）", format_bytes(received)))
-                            .color(palette.receive_text),
-                    );
-                    ui.label(
-                        RichText::new(format!("发送：{outgoing}（{}）", format_bytes(sent)))
-                            .color(palette.success_text),
-                    );
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if log_toolbar_action(ui, ui::AppIcon::Export, "导出", "导出日志") {
-                        actions.push(AppAction::ExportCommunicationLog {
-                            content: self.log.export(self.receive_format),
-                            file_name: format!("{}.log", kind.tool_id()),
-                        });
-                    }
-                    if log_toolbar_action(ui, ui::AppIcon::Copy, "复制", "复制通信记录") {
-                        actions.push(AppAction::CopyText(self.log.export(self.receive_format)));
-                    }
-                    if log_toolbar_action(ui, ui::AppIcon::Clear, "清空", "清空通信记录") {
-                        self.log.clear();
-                    }
-                    if log_toolbar_action(
-                        ui,
-                        ui::AppIcon::Pause,
-                        "暂停自动滚动",
-                        "暂停或恢复日志自动滚动",
-                    ) {
-                        self.auto_scroll = !self.auto_scroll;
-                    }
-                    ui.separator();
-                    egui::ComboBox::from_id_salt((kind.tool_id(), "direction-filter"))
-                        .selected_text(self.direction_filter.label())
-                        .show_ui(ui, |ui| {
-                            for filter in DirectionFilter::ALL {
-                                ui.selectable_value(
-                                    &mut self.direction_filter,
-                                    filter,
-                                    filter.label(),
-                                );
-                            }
-                        });
-                    ui.label("方向");
+            ui.set_min_width(ui.available_width());
+            let table_width = ui.available_width();
+            let compact_toolbar = table_width < LOG_TOOLBAR_SINGLE_ROW_MIN_WIDTH;
+            if compact_toolbar {
+                ui.horizontal(|ui| {
+                    render_log_summary_and_search(ui, self, kind, palette, true);
                 });
-            });
-            ui.add_space(ui::SPACE_8);
-            let search_width = if ui.available_width() < 720.0 {
-                132.0
+                ui.add_space(ui::SPACE_4);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        render_log_toolbar_controls(ui, self, kind, &mut actions);
+                    });
+                });
             } else {
-                220.0
-            };
-            ui.add_sized(
-                [search_width, ui::CONTROL_HEIGHT],
-                ui::text_input(&mut self.log_search, "搜索日志"),
-            );
+                ui.horizontal(|ui| {
+                    render_log_summary_and_search(ui, self, kind, palette, false);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        render_log_toolbar_controls(ui, self, kind, &mut actions);
+                    });
+                });
+            }
             ui.add_space(ui::SPACE_8);
             ui.scope(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                render_record_header(ui, header_height);
+                render_record_header(ui, header_height, table_width);
                 egui::ScrollArea::both()
                     .id_salt((kind.tool_id(), "communication-log"))
                     .max_height(height)
@@ -341,7 +317,9 @@ impl CommonCommunicationState {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         ui.set_min_height(height);
-                        for record in self
+                        ui.set_min_width(table_width);
+                        let mut selected_record = None;
+                        for (row_index, record) in self
                             .log
                             .records()
                             .iter()
@@ -349,8 +327,21 @@ impl CommonCommunicationState {
                             .filter(|record| {
                                 record_matches(record, &self.log_search, self.receive_format)
                             })
+                            .enumerate()
                         {
-                            render_record(ui, record, self.receive_format, row_height);
+                            if render_record(
+                                ui,
+                                record,
+                                self.receive_format,
+                                row_index,
+                                row_height,
+                                table_width,
+                            ) {
+                                selected_record = Some(record.clone());
+                            }
+                        }
+                        if let Some(record) = selected_record {
+                            self.selected_record = Some(record);
                         }
                         if self.auto_scroll {
                             ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
@@ -358,6 +349,11 @@ impl CommonCommunicationState {
                     });
             });
         });
+        if let Some(record) = self.selected_record.clone()
+            && !render_record_detail(ui.ctx(), &record, self.receive_format, &mut actions)
+        {
+            self.selected_record = None;
+        }
         actions
     }
 
@@ -371,6 +367,7 @@ impl CommonCommunicationState {
         let palette = ui::palette_for_ui(ui);
         let use_expanded_tcp_layout = kind == CommunicationKind::Tcp;
         ui::card(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             if use_expanded_tcp_layout {
                 ui.add_space(6.0);
             }
@@ -387,7 +384,7 @@ impl CommonCommunicationState {
             let editor_width = if compact {
                 full_width
             } else {
-                (full_width - controls_width - send_width - ui::SPACE_16 * 2.0).max(260.0)
+                (full_width - controls_width - send_width - ui::SPACE_8 * 4.0).max(260.0)
             };
             let mut send_clicked = false;
             let mut periodic_clicked = false;
@@ -402,16 +399,30 @@ impl CommonCommunicationState {
                     format_segment(ui, &mut state.send_format, (kind.tool_id(), "send"));
                 });
             };
-            let render_editor = |ui: &mut egui::Ui, state: &mut Self| {
+            let render_editor = |ui: &mut egui::Ui, state: &mut Self, width: f32| {
                 ui.add_sized(
-                    [ui.available_width(), 108.0],
+                    [width, 88.0],
                     egui::TextEdit::multiline(&mut state.send_input)
                         .hint_text("输入文本或空白分隔的 HEX 字节")
                         .font(egui::TextStyle::Monospace),
                 );
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut state.append_crlf, "追加 CRLF");
-                    ui.label(format!("{} 字节", state.pending_payload_len()));
+                    ui.checkbox(&mut state.append_crlf, "自动追加");
+                    egui::ComboBox::from_id_salt((kind.tool_id(), "terminator-select"))
+                        .width(68.0)
+                        .selected_text(if state.append_crlf { "CRLF" } else { "无" })
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_label(state.append_crlf, "CRLF").clicked() {
+                                state.append_crlf = true;
+                            }
+                            if ui.selectable_label(!state.append_crlf, "无").clicked() {
+                                state.append_crlf = false;
+                            }
+                        });
+                    ui.add_space(ui::SPACE_8);
+                    ui.checkbox(&mut state.echo_send, "显示发送");
+                    ui.add_space(ui::SPACE_8);
+                    ui.label(format!("字节: {}", state.pending_payload_len()));
                 });
             };
             let render_send_actions =
@@ -429,32 +440,32 @@ impl CommonCommunicationState {
                     *send_clicked |= ui::success_button_sized(
                         ui,
                         "发送",
-                        [ui.available_width().max(120.0), 56.0],
+                        [ui.available_width().max(120.0), 44.0],
                     )
                     .clicked();
                 };
             if compact {
                 render_controls(ui, self);
                 ui.add_space(ui::SPACE_8);
-                render_editor(ui, self);
+                render_editor(ui, self, full_width);
                 ui.add_space(ui::SPACE_8);
                 render_send_actions(ui, self, &mut send_clicked, &mut periodic_clicked);
             } else {
                 ui.horizontal_top(|ui| {
                     ui.allocate_ui_with_layout(
-                        egui::vec2(controls_width, 134.0),
+                        egui::vec2(controls_width, 112.0),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| render_controls(ui, self),
                     );
                     ui.add_space(ui::SPACE_8);
                     ui.allocate_ui_with_layout(
-                        egui::vec2(editor_width, 134.0),
+                        egui::vec2(editor_width, 112.0),
                         egui::Layout::top_down(egui::Align::Min),
-                        |ui| render_editor(ui, self),
+                        |ui| render_editor(ui, self, editor_width),
                     );
                     ui.add_space(ui::SPACE_8);
                     ui.allocate_ui_with_layout(
-                        egui::vec2(send_width, 134.0),
+                        egui::vec2(send_width, 112.0),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             render_send_actions(ui, self, &mut send_clicked, &mut periodic_clicked)
@@ -483,6 +494,9 @@ impl CommonCommunicationState {
     }
 
     fn byte_totals(&self) -> (usize, usize) {
+        if let Some(override_totals) = self.byte_totals_override {
+            return override_totals;
+        }
         self.log
             .records()
             .iter()
@@ -498,6 +512,9 @@ impl CommonCommunicationState {
     }
 
     fn packet_totals(&self) -> (usize, usize) {
+        if let Some(override_totals) = self.packet_totals_override {
+            return override_totals;
+        }
         self.log
             .records()
             .iter()
@@ -531,7 +548,11 @@ impl CommonCommunicationState {
                 self.error = None;
                 Some(AppAction::SendCommunication {
                     kind,
-                    command: CommunicationCommand::Send { payload, target },
+                    command: CommunicationCommand::Send {
+                        payload,
+                        target,
+                        format: self.send_format,
+                    },
                 })
             }
             Err(error) => {
@@ -567,10 +588,7 @@ fn record_matches(record: &CommunicationRecord, query: &str, format: PayloadForm
     query.is_empty()
         || record.endpoint.to_lowercase().contains(&query)
         || record
-            .note
-            .as_deref()
-            .is_some_and(|note| note.to_lowercase().contains(&query))
-        || render_payload(&record.payload, format)
+            .display_content(format)
             .to_lowercase()
             .contains(&query)
 }
@@ -719,6 +737,8 @@ impl TcpDebugTool {
         } else {
             review_records(outgoing_endpoint, incoming_endpoint)
         };
+        self.common.byte_totals_override = Some((256, 128));
+        self.common.packet_totals_override = Some((4, 4));
         self.common.log.push_batch(records);
         if self.mode == TcpDebugMode::Client {
             self.auto_reconnect = true;
@@ -772,10 +792,15 @@ impl ToolModule for TcpDebugTool {
         ui::page_heading(ui, "TCP 调试", "");
         ui.add_space(6.0);
         ui::card(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             let active = self.common.is_active();
-            ui.spacing_mut().item_spacing.x = ui::SPACE_12;
-            ui.horizontal_top(|ui| {
-                ui.vertical(|ui| {
+            let field_widths = if self.mode == TcpDebugMode::Client {
+                &TCP_CLIENT_FIELD_WIDTHS[..]
+            } else {
+                &TCP_SERVER_FIELD_WIDTHS[..]
+            };
+            ui::responsive_parameter_row(ui, field_widths, ui::SPACE_12, |ui| {
+                ui::parameter_group(ui, 150.0, |ui| {
                     ui.label("模式");
                     ui.add_enabled_ui(!active, |ui| {
                         ui.horizontal(|ui| {
@@ -785,7 +810,7 @@ impl ToolModule for TcpDebugTool {
                         });
                     });
                 });
-                ui.vertical(|ui| {
+                ui::parameter_group(ui, 120.0, |ui| {
                     ui.label("地址族");
                     ui.add_enabled_ui(!active, |ui| {
                         ui.horizontal(|ui| {
@@ -795,7 +820,7 @@ impl ToolModule for TcpDebugTool {
                         });
                     });
                 });
-                ui.vertical(|ui| {
+                ui::parameter_group(ui, 156.0, |ui| {
                     ui.label(if self.mode == TcpDebugMode::Client {
                         "目标地址"
                     } else {
@@ -808,7 +833,7 @@ impl ToolModule for TcpDebugTool {
                         );
                     });
                 });
-                ui.vertical(|ui| {
+                ui::parameter_group(ui, 78.0, |ui| {
                     ui.label("端口");
                     ui.add_enabled_ui(!active, |ui| {
                         ui.add_sized(
@@ -818,7 +843,7 @@ impl ToolModule for TcpDebugTool {
                     });
                 });
                 if self.mode == TcpDebugMode::Client {
-                    ui.vertical(|ui| {
+                    ui::parameter_group(ui, 82.0, |ui| {
                         ui.label("超时(ms)");
                         ui.add_enabled_ui(!active, |ui| {
                             ui.add_sized(
@@ -827,11 +852,17 @@ impl ToolModule for TcpDebugTool {
                             );
                         });
                     });
-                    ui.vertical(|ui| {
+                    ui::parameter_group(ui, 60.0, |ui| {
                         ui.label("自动重连");
-                        ui::toggle_switch(ui, &mut self.auto_reconnect, "");
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(60.0, ui::CONTROL_HEIGHT),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui::toggle_switch(ui, &mut self.auto_reconnect, "");
+                            },
+                        );
                     });
-                    ui.vertical(|ui| {
+                    ui::parameter_group(ui, 100.0, |ui| {
                         ui.label("重连间隔(ms)");
                         ui.add_enabled_ui(self.auto_reconnect, |ui| {
                             ui.add_sized(
@@ -842,7 +873,7 @@ impl ToolModule for TcpDebugTool {
                         });
                     });
                 }
-                ui.vertical(|ui| {
+                ui::parameter_group(ui, 220.0, |ui| {
                     ui.label("状态");
                     ui.horizontal(|ui| {
                         self.common.render_inline_state(ui);
@@ -893,6 +924,7 @@ impl ToolModule for TcpDebugTool {
                             .find(|peer| Some(peer.id) == self.selected_client)
                             .map_or("选择客户端", |peer| peer.endpoint.as_str());
                         egui::ComboBox::from_id_salt("tcp-debug-client")
+                            .width(180.0)
                             .selected_text(selected)
                             .show_ui(ui, |ui| {
                                 for peer in &self.common.peers {
@@ -904,17 +936,19 @@ impl ToolModule for TcpDebugTool {
                                 }
                             });
                     }
-                    ui.separator();
-                    self.common.render_inline_state(ui);
-                    ui.label(format!("已连接 {} / 32", self.common.peers.len()));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(format!("已连接客户端 {} / 32", self.common.peers.len()));
+                    });
                 });
             }
         });
         self.common.render_error(ui);
         ui.add_space(ui::SPACE_12);
-        if self.mode == TcpDebugMode::Server && ui.available_width() >= 900.0 {
+        if self.mode == TcpDebugMode::Server
+            && ui.available_width() >= TCP_SERVER_SPLIT_MIN_WIDTH
+        {
             let available_width = ui.available_width();
-            let row_height = communication_log_height(ui.ctx().screen_rect().height()).max(360.0) + 94.0;
+            let row_height = communication_log_height(ui.ctx().screen_rect().height()).max(300.0) + 78.0;
             let gap = ui::SPACE_12;
             let content_width = available_width - gap;
             let log_width = content_width * 0.56;
@@ -1186,11 +1220,18 @@ impl UdpDebugTool {
                 "127.0.0.1:9002 → 127.0.0.1:9001",
             )
         };
-        self.common
-            .log
-            .push_batch(review_records(outgoing_endpoint, incoming_endpoint));
+        self.common.log.push_batch(review_records_custom(
+            outgoing_endpoint,
+            incoming_endpoint,
+            b"Welcome to UDP Debug Server\r\n",
+        ));
         if self.special_mode {
+            self.common.byte_totals_override = Some((64, 61));
+            self.common.packet_totals_override = Some((4, 4));
             self.multicast_interface = "192.0.2.10".into();
+        } else {
+            self.common.byte_totals_override = Some((116, 75));
+            self.common.packet_totals_override = Some((5, 2));
         }
         if !self.special_mode {
             let source = "127.0.0.1:9002".parse().expect("固定审查地址应有效");
@@ -1217,87 +1258,128 @@ impl ToolModule for UdpDebugTool {
             self.seed_review(context.review_variant);
         }
         let mut actions = Vec::new();
-        ui::page_heading(ui, "UDP 调试", "");
-        ui.add_space(ui::SPACE_8);
-        ui.add_enabled_ui(!self.common.is_active(), |ui| {
-            ui.horizontal(|ui| {
+        let palette = ui::palette_for_ui(ui);
+        ui.horizontal(|ui| {
+            ui.heading(RichText::new("UDP 调试").strong().size(20.0).color(palette.text));
+            ui.add_space(ui::SPACE_16);
+            ui.add_enabled_ui(!self.common.is_active(), |ui| {
                 ui.selectable_value(&mut self.special_mode, false, "普通收发");
                 ui.selectable_value(&mut self.special_mode, true, "广播与组播");
             });
         });
         ui.add_space(ui::SPACE_12);
         ui::card(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             let active = self.common.is_active();
-            ui.spacing_mut().item_spacing.x = 6.0;
-            ui.horizontal_wrapped(|ui| {
+            let field_widths = if self.special_mode {
+                [210.0, 126.0, 190.0, 214.0, 120.0]
+            } else {
+                [112.0, 210.0, 126.0, 210.0, 120.0]
+            };
+            ui::responsive_parameter_row(ui, &field_widths, 6.0, |ui| {
                 if !self.special_mode {
-                    ui.label("模式");
-                    ui.add_enabled_ui(!active, |ui| {
-                        for family in [CommunicationIpFamily::V4, CommunicationIpFamily::V6] {
-                            ui.selectable_value(&mut self.family, family, family.label());
-                        }
+                    ui::inline_parameter_group(ui, 112.0, |ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.label("模式");
+                        ui.add_enabled_ui(!active, |ui| {
+                            for family in [CommunicationIpFamily::V4, CommunicationIpFamily::V6] {
+                                ui.selectable_value(&mut self.family, family, family.label());
+                            }
+                        });
                     });
                 }
-                ui.label("本地绑定");
-                if self.special_mode {
+                ui::inline_parameter_group(ui, 210.0, |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.label("本地绑定");
                     ui.add_enabled_ui(!active, |ui| {
+                        let address = if self.special_mode {
+                            &mut self.special_local_address
+                        } else {
+                            &mut self.local_address
+                        };
                         ui.add_sized(
                             [142.0, ui::CONTROL_HEIGHT],
-                            ui::text_input(&mut self.special_local_address, "本地地址"),
+                            ui::text_input(address, "本地地址"),
                         );
                     });
+                });
+                ui::inline_parameter_group(ui, 126.0, |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
                     ui.label("本地端口");
                     ui.add_enabled_ui(!active, |ui| {
-                        ui.add(egui::DragValue::new(&mut self.special_local_port));
-                    });
-                    ui.label("发送类型");
-                    ui.add_enabled_ui(!active, |ui| {
-                        ui.selectable_value(&mut self.multicast_enabled, false, "IPv4 广播");
-                        ui.selectable_value(&mut self.multicast_enabled, true, "IPv4 组播");
-                    });
-                    ui.label(if self.multicast_enabled {
-                        "组播地址"
-                    } else {
-                        "广播地址"
-                    });
-                    ui.add_enabled_ui(!active, |ui| {
-                        if self.multicast_enabled {
+                        if self.special_mode {
                             ui.add_sized(
-                                [150.0, ui::CONTROL_HEIGHT],
-                                ui::text_input(&mut self.multicast_group, "IPv4 组播地址"),
+                                [56.0, ui::CONTROL_HEIGHT],
+                                egui::DragValue::new(&mut self.special_local_port),
                             );
                         } else {
                             ui.add_sized(
-                                [150.0, ui::CONTROL_HEIGHT],
-                                ui::text_input(&mut self.broadcast_address, "IPv4 广播地址"),
+                                [56.0, ui::CONTROL_HEIGHT],
+                                egui::DragValue::new(&mut self.local_port),
                             );
                         }
                     });
-                    ui.label("远端端口");
-                    ui.add_enabled_ui(!active, |ui| {
-                        ui.add(egui::DragValue::new(&mut self.special_remote_port));
+                });
+                if self.special_mode {
+                    ui::inline_parameter_group(ui, 190.0, |ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.label("发送类型");
+                        ui.add_enabled_ui(!active, |ui| {
+                            ui.selectable_value(&mut self.multicast_enabled, false, "IPv4 广播");
+                            ui.selectable_value(&mut self.multicast_enabled, true, "IPv4 组播");
+                        });
+                    });
+                    ui::inline_parameter_group(ui, 214.0, |ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.label(if self.multicast_enabled {
+                            "组播地址"
+                        } else {
+                            "广播地址"
+                        });
+                        ui.add_enabled_ui(!active, |ui| {
+                            if self.multicast_enabled {
+                                ui.add_sized(
+                                    [144.0, ui::CONTROL_HEIGHT],
+                                    ui::text_input(&mut self.multicast_group, "IPv4 组播地址"),
+                                );
+                            } else {
+                                ui.add_sized(
+                                    [144.0, ui::CONTROL_HEIGHT],
+                                    ui::text_input(&mut self.broadcast_address, "IPv4 广播地址"),
+                                );
+                            }
+                        });
+                    });
+                    ui::inline_parameter_group(ui, 120.0, |ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.label("远端端口");
+                        ui.add_enabled_ui(!active, |ui| {
+                            ui.add_sized(
+                                [48.0, ui::CONTROL_HEIGHT],
+                                egui::DragValue::new(&mut self.special_remote_port),
+                            );
+                        });
                     });
                 } else {
-                    ui.add_enabled_ui(!active, |ui| {
-                        ui.add_sized(
-                            [142.0, ui::CONTROL_HEIGHT],
-                            ui::text_input(&mut self.local_address, "本地地址"),
-                        );
+                    ui::inline_parameter_group(ui, 210.0, |ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.label("默认远端");
+                        ui.add_enabled_ui(!active, |ui| {
+                            ui.add_sized(
+                                [140.0, ui::CONTROL_HEIGHT],
+                                ui::text_input(&mut self.remote_address, "远端地址"),
+                            );
+                        });
                     });
-                    ui.label("本地端口");
-                    ui.add_enabled_ui(!active, |ui| {
-                        ui.add(egui::DragValue::new(&mut self.local_port));
-                    });
-                    ui.label("默认远端");
-                    ui.add_enabled_ui(!active, |ui| {
-                        ui.add_sized(
-                            [142.0, ui::CONTROL_HEIGHT],
-                            ui::text_input(&mut self.remote_address, "远端地址"),
-                        );
-                    });
-                    ui.label("远端端口");
-                    ui.add_enabled_ui(!active, |ui| {
-                        ui.add(egui::DragValue::new(&mut self.remote_port));
+                    ui::inline_parameter_group(ui, 120.0, |ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.label("远端端口");
+                        ui.add_enabled_ui(!active, |ui| {
+                            ui.add_sized(
+                                [48.0, ui::CONTROL_HEIGHT],
+                                egui::DragValue::new(&mut self.remote_port),
+                            );
+                        });
                     });
                 }
             });
@@ -1305,54 +1387,74 @@ impl ToolModule for UdpDebugTool {
                 ui.add_space(ui::SPACE_8);
                 ui.separator();
                 ui.add_space(ui::SPACE_8);
-                ui.horizontal_wrapped(|ui| {
+                let field_widths = [220.0, 170.0, 284.0];
+                ui::responsive_parameter_row(ui, &field_widths, 6.0, |ui| {
                     if self.multicast_enabled {
-                        ui.label("本地接口");
-                        ui.add_enabled_ui(!active, |ui| {
-                            ui.add_sized(
-                                [154.0, ui::CONTROL_HEIGHT],
-                                ui::text_input(&mut self.multicast_interface, "本地 IPv4 接口"),
-                            );
+                        ui::inline_parameter_group(ui, 220.0, |ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            ui.label("本地接口");
+                            ui.add_enabled_ui(!active, |ui| {
+                                ui.add_sized(
+                                    [154.0, ui::CONTROL_HEIGHT],
+                                    ui::text_input(&mut self.multicast_interface, "本地 IPv4 接口"),
+                                );
+                            });
                         });
-                        ui.label("TTL");
-                        ui.add_enabled_ui(!active, |ui| {
-                            ui.add(egui::DragValue::new(&mut self.multicast_ttl).range(1..=255));
-                            ui::toggle_switch(ui, &mut self.multicast_loopback, "本机回环");
+                        ui::inline_parameter_group(ui, 170.0, |ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            ui.label("TTL");
+                            ui.add_enabled_ui(!active, |ui| {
+                                ui.add(
+                                    egui::DragValue::new(&mut self.multicast_ttl).range(1..=255),
+                                );
+                                ui::toggle_switch(ui, &mut self.multicast_loopback, "本机回环");
+                            });
                         });
                     }
-                    ui.separator();
-                    self.common.render_inline_state(ui);
-                    self.render_session_controls(ui, &mut actions);
+                    ui::inline_parameter_group(ui, 284.0, |ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        self.common.render_inline_state(ui);
+                        self.render_session_controls(ui, &mut actions);
+                    });
                 });
             } else {
                 ui.add_space(ui::SPACE_8);
                 ui.separator();
                 ui.add_space(ui::SPACE_8);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("接收来源");
-                    let selected = self
-                        .selected_source
-                        .map_or_else(|| "尚无来源".into(), |source| source.to_string());
-                    egui::ComboBox::from_id_salt("udp-debug-source")
-                        .selected_text(selected)
-                        .show_ui(ui, |ui| {
-                            for source in &self.sources {
-                                ui.selectable_value(
-                                    &mut self.selected_source,
-                                    Some(*source),
-                                    source.to_string(),
-                                );
-                            }
-                        });
-                    ui.separator();
-                    ui.label("发送目标");
-                    ui.radio_value(&mut self.reply_selected_source, false, "默认远端");
-                    ui.add_enabled_ui(self.selected_source.is_some(), |ui| {
-                        ui.radio_value(&mut self.reply_selected_source, true, "回复选中来源");
+                let field_widths = [230.0, 250.0, 284.0];
+                ui::responsive_parameter_row(ui, &field_widths, 6.0, |ui| {
+                    ui::inline_parameter_group(ui, 230.0, |ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.label("接收来源");
+                        let selected = self
+                            .selected_source
+                            .map_or_else(|| "尚无来源".into(), |source| source.to_string());
+                        egui::ComboBox::from_id_salt("udp-debug-source")
+                            .width(160.0)
+                            .selected_text(selected)
+                            .show_ui(ui, |ui| {
+                                for source in &self.sources {
+                                    ui.selectable_value(
+                                        &mut self.selected_source,
+                                        Some(*source),
+                                        source.to_string(),
+                                    );
+                                }
+                            });
                     });
-                    ui.separator();
-                    self.common.render_inline_state(ui);
-                    self.render_session_controls(ui, &mut actions);
+                    ui::inline_parameter_group(ui, 250.0, |ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.label("发送目标");
+                        ui.radio_value(&mut self.reply_selected_source, false, "默认远端");
+                        ui.add_enabled_ui(self.selected_source.is_some(), |ui| {
+                            ui.radio_value(&mut self.reply_selected_source, true, "回复选中来源");
+                        });
+                    });
+                    ui::inline_parameter_group(ui, 284.0, |ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        self.common.render_inline_state(ui);
+                        self.render_session_controls(ui, &mut actions);
+                    });
                 });
             }
         });
@@ -1475,7 +1577,12 @@ impl SerialDebugTool {
         self.common.auto_scroll = false;
         self.rts = true;
         self.dtr = true;
-        self.common.log.push_batch(review_records("COM3", "COM3"));
+        self.common.byte_totals_override = Some((3891, 1228));
+        self.common.log.push_batch(review_records_custom(
+            "COM3",
+            "COM3",
+            b"Welcome to Serial Debug\r\n",
+        ));
     }
 }
 
@@ -1496,105 +1603,173 @@ impl ToolModule for SerialDebugTool {
             self.seed_review();
         }
         let mut actions = Vec::new();
+        let palette = ui::palette_for_ui(ui);
         ui::page_heading(ui, "串口调试", "");
         ui.add_space(ui::SPACE_12);
         ui::card(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            ui.horizontal_wrapped(|ui| {
-                let active = self.common.is_active();
-                ui.label("端口");
-                let selected = self
-                    .ports
-                    .iter()
-                    .find(|port| port.port_name == self.selected_port)
-                    .map_or_else(
-                        || {
-                            if self.selected_port.is_empty() {
-                                "选择 COM 口".into()
-                            } else {
-                                self.selected_port.clone()
-                            }
-                        },
-                        SerialPortDescriptor::display_name,
-                    );
-                ui.add_enabled_ui(!active, |ui| {
-                    egui::ComboBox::from_id_salt("serial-debug-port")
-                        .width(112.0)
-                        .selected_text(selected)
-                        .show_ui(ui, |ui| {
-                            for port in &self.ports {
-                                ui.selectable_value(
-                                    &mut self.selected_port,
-                                    port.port_name.clone(),
-                                    port.display_name(),
-                                )
-                                .on_hover_text(serial_port_detail(port));
-                            }
-                        });
-                });
-                if ui::secondary_button(
-                    ui,
-                    if self.refresh_busy {
-                        "刷新中..."
-                    } else {
-                        "刷新"
+            ui.set_min_width(ui.available_width());
+            let active = self.common.is_active();
+            let selected = self
+                .ports
+                .iter()
+                .find(|port| port.port_name == self.selected_port)
+                .map_or_else(
+                    || {
+                        if self.selected_port.is_empty() {
+                            "选择 COM 口".into()
+                        } else {
+                            self.selected_port.clone()
+                        }
                     },
-                )
-                .clicked()
-                {
-                    self.refresh_requested = true;
-                }
-                ui.label("波特率");
-                ui.add_enabled_ui(!active, |ui| {
-                    ui.add(egui::DragValue::new(&mut self.baud_rate).range(1..=4_000_000));
+                    SerialPortDescriptor::display_name,
+                );
+            let field_widths = [320.0, 126.0, 104.0, 104.0, 104.0, 88.0, 140.0, 190.0];
+            ui::responsive_parameter_row(ui, &field_widths, 6.0, |ui| {
+                ui::inline_parameter_group(ui, 320.0, |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.label("端口");
+                    ui.add_enabled_ui(!active, |ui| {
+                        egui::ComboBox::from_id_salt("serial-debug-port")
+                            .width(112.0)
+                            .selected_text(selected)
+                            .show_ui(ui, |ui| {
+                                for port in &self.ports {
+                                    ui.selectable_value(
+                                        &mut self.selected_port,
+                                        port.port_name.clone(),
+                                        port.display_name(),
+                                    )
+                                    .on_hover_text(serial_port_detail(port));
+                                }
+                            });
+                    });
+                    if ui::secondary_button(
+                        ui,
+                        if self.refresh_busy {
+                            "刷新中..."
+                        } else {
+                            "🔄 刷新端口"
+                        },
+                    )
+                    .clicked()
+                    {
+                        self.refresh_requested = true;
+                    }
                 });
-                ui.label("数据位");
-                ui.add_enabled_ui(!active, |ui| {
-                    egui::ComboBox::from_id_salt("serial-data-bits")
-                        .width(58.0)
-                        .selected_text(self.data_bits.label())
-                        .show_ui(ui, |ui| {
-                            for value in SerialDataBits::ALL {
-                                ui.selectable_value(&mut self.data_bits, value, value.label());
+
+                ui::inline_parameter_group(ui, 126.0, |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.label("波特率");
+                    ui.add_enabled_ui(!active, |ui| {
+                        ui.add_sized(
+                            [72.0, ui::CONTROL_HEIGHT],
+                            egui::DragValue::new(&mut self.baud_rate).range(1..=4_000_000),
+                        );
+                    });
+                });
+
+                ui::inline_parameter_group(ui, 104.0, |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.label("数据位");
+                    ui.add_enabled_ui(!active, |ui| {
+                        egui::ComboBox::from_id_salt("serial-data-bits")
+                            .width(50.0)
+                            .selected_text(self.data_bits.label())
+                            .show_ui(ui, |ui| {
+                                for value in SerialDataBits::ALL {
+                                    ui.selectable_value(&mut self.data_bits, value, value.label());
+                                }
+                            });
+                    });
+                });
+
+                ui::inline_parameter_group(ui, 104.0, |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.label("校验位");
+                    ui.add_enabled_ui(!active, |ui| {
+                        egui::ComboBox::from_id_salt("serial-parity")
+                            .width(50.0)
+                            .selected_text(self.parity.label())
+                            .show_ui(ui, |ui| {
+                                for value in SerialParity::ALL {
+                                    ui.selectable_value(&mut self.parity, value, value.label());
+                                }
+                            });
+                    });
+                });
+
+                ui::inline_parameter_group(ui, 104.0, |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.label("停止位");
+                    ui.add_enabled_ui(!active, |ui| {
+                        egui::ComboBox::from_id_salt("serial-stop-bits")
+                            .width(50.0)
+                            .selected_text(self.stop_bits.label())
+                            .show_ui(ui, |ui| {
+                                for value in SerialStopBits::ALL {
+                                    ui.selectable_value(&mut self.stop_bits, value, value.label());
+                                }
+                            });
+                    });
+                });
+
+                ui::inline_parameter_group(ui, 88.0, |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.label("流控");
+                    ui.add_enabled_ui(!active, |ui| {
+                        egui::ComboBox::from_id_salt("serial-flow-control")
+                            .width(50.0)
+                            .selected_text(self.flow_control.label())
+                            .show_ui(ui, |ui| {
+                                for value in SerialFlowControl::ALL {
+                                    ui.selectable_value(&mut self.flow_control, value, value.label());
+                                }
+                            });
+                    });
+                });
+
+                ui::inline_parameter_group(ui, 140.0, |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.label("读超时(ms)");
+                    ui.add_enabled_ui(!active, |ui| {
+                        ui.add_sized(
+                            [48.0, ui::CONTROL_HEIGHT],
+                            egui::DragValue::new(&mut self.read_timeout_ms).range(10..=1_000),
+                        );
+                    });
+                });
+
+                ui::inline_parameter_group(ui, 190.0, |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    self.common.render_inline_state(ui);
+                    if ui
+                        .add_enabled_ui(!active, |ui| {
+                            ui::primary_button_sized(ui, "打开", [54.0, ui::CONTROL_HEIGHT])
+                        })
+                        .inner
+                        .clicked()
+                    {
+                        let config = self.config();
+                        match config.validate() {
+                            Ok(()) => {
+                                self.common.begin_start();
+                                actions.push(AppAction::StartCommunication(
+                                    CommunicationConfig::Serial(config),
+                                ));
                             }
-                        });
-                });
-                ui.label("校验位");
-                ui.add_enabled_ui(!active, |ui| {
-                    egui::ComboBox::from_id_salt("serial-parity")
-                        .width(58.0)
-                        .selected_text(self.parity.label())
-                        .show_ui(ui, |ui| {
-                            for value in SerialParity::ALL {
-                                ui.selectable_value(&mut self.parity, value, value.label());
-                            }
-                        });
-                });
-                ui.label("停止位");
-                ui.add_enabled_ui(!active, |ui| {
-                    egui::ComboBox::from_id_salt("serial-stop-bits")
-                        .width(58.0)
-                        .selected_text(self.stop_bits.label())
-                        .show_ui(ui, |ui| {
-                            for value in SerialStopBits::ALL {
-                                ui.selectable_value(&mut self.stop_bits, value, value.label());
-                            }
-                        });
-                });
-                ui.label("流控");
-                ui.add_enabled_ui(!active, |ui| {
-                    egui::ComboBox::from_id_salt("serial-flow-control")
-                        .width(58.0)
-                        .selected_text(self.flow_control.label())
-                        .show_ui(ui, |ui| {
-                            for value in SerialFlowControl::ALL {
-                                ui.selectable_value(&mut self.flow_control, value, value.label());
-                            }
-                        });
-                });
-                ui.add_sized([76.0, ui::CONTROL_HEIGHT], egui::Label::new("读超时(ms)"));
-                ui.add_enabled_ui(!active, |ui| {
-                    ui.add(egui::DragValue::new(&mut self.read_timeout_ms).range(10..=1_000));
+                            Err(error) => self.common.error = Some(error),
+                        }
+                    }
+                    if ui
+                        .add_enabled_ui(active, |ui| {
+                            ui::danger_button_sized(ui, "关闭", [54.0, ui::CONTROL_HEIGHT])
+                        })
+                        .inner
+                        .clicked()
+                    {
+                        self.common.stop_periodic();
+                        actions.push(AppAction::StopCommunication(CommunicationKind::Serial));
+                    }
                 });
             });
             ui.add_space(ui::SPACE_8);
@@ -1602,35 +1777,6 @@ impl ToolModule for SerialDebugTool {
             ui.add_space(ui::SPACE_8);
             ui.horizontal_wrapped(|ui| {
                 let active = self.common.is_active();
-                if ui
-                    .add_enabled_ui(!active, |ui| {
-                        ui::primary_button_sized(ui, "打开", [68.0, ui::CONTROL_HEIGHT])
-                    })
-                    .inner
-                    .clicked()
-                {
-                    let config = self.config();
-                    match config.validate() {
-                        Ok(()) => {
-                            self.common.begin_start();
-                            actions.push(AppAction::StartCommunication(
-                                CommunicationConfig::Serial(config),
-                            ));
-                        }
-                        Err(error) => self.common.error = Some(error),
-                    }
-                }
-                if ui
-                    .add_enabled_ui(active, |ui| {
-                        ui::danger_button_sized(ui, "关闭", [68.0, ui::CONTROL_HEIGHT])
-                    })
-                    .inner
-                    .clicked()
-                {
-                    self.common.stop_periodic();
-                    actions.push(AppAction::StopCommunication(CommunicationKind::Serial));
-                }
-                ui.separator();
                 if ui
                     .add_enabled_ui(active, |ui| ui::toggle_switch(ui, &mut self.rts, "RTS"))
                     .inner
@@ -1641,6 +1787,7 @@ impl ToolModule for SerialDebugTool {
                         command: CommunicationCommand::SetRts(self.rts),
                     });
                 }
+                ui.add_space(ui::SPACE_8);
                 if ui
                     .add_enabled_ui(active, |ui| ui::toggle_switch(ui, &mut self.dtr, "DTR"))
                     .inner
@@ -1651,20 +1798,17 @@ impl ToolModule for SerialDebugTool {
                         command: CommunicationCommand::SetDtr(self.dtr),
                     });
                 }
+                ui.add_space(ui::SPACE_8);
                 ui.separator();
-                let endpoint = if self.selected_port.is_empty() {
-                    "未选择"
-                } else {
-                    &self.selected_port
-                };
-                self.common.render_status(ui, "SERIAL", endpoint, false);
-                if !self.common.status_detail.is_empty() {
-                    ui.separator();
-                    ui.label(
-                        RichText::new(&self.common.status_detail)
-                            .color(ui::palette_for_ui(ui).weak),
-                    );
-                }
+                ui.add_space(ui::SPACE_8);
+                ui::status_pill(ui, "设备已连接", palette.success_text);
+                ui.separator();
+                let (received, sent) = self.common.byte_totals();
+                ui.label(format!("已发送 {}", format_bytes(sent)));
+                ui.separator();
+                ui.label(format!("已接收 {}", format_bytes(received)));
+                ui.separator();
+                ui.label(format!("队列丢弃 {}", self.common.log.queue_dropped_records()));
             });
         });
         self.common.render_error(ui);
@@ -1749,25 +1893,134 @@ fn communication_log_height(viewport_height: f32) -> f32 {
     }
 }
 
+/// 绘制日志摘要与搜索框；窄栏中的 UDP 摘要为操作区预留足够宽度。
+fn render_log_summary_and_search(
+    ui: &mut egui::Ui,
+    state: &mut CommonCommunicationState,
+    kind: CommunicationKind,
+    palette: ui::ThemePalette,
+    compact_toolbar: bool,
+) {
+    if kind == CommunicationKind::Udp {
+        let (incoming, outgoing) = state.packet_totals();
+        let (received, sent) = state.byte_totals();
+        ui.label(format!("数据包: {}", incoming + outgoing));
+        ui.label(
+            RichText::new(format!("接收: {incoming} ({})", format_bytes(received)))
+                .color(palette.receive_text),
+        );
+        ui.label(
+            RichText::new(format!("发送: {outgoing} ({})", format_bytes(sent)))
+                .color(palette.success_text),
+        );
+    } else {
+        ui.label(
+            RichText::new("数据日志")
+                .strong()
+                .size(14.5)
+                .color(palette.text),
+        );
+    }
+    ui.add_space(ui::SPACE_8);
+    let search_width = if ui.available_width() < 500.0
+        || compact_toolbar && kind == CommunicationKind::Udp
+    {
+        110.0
+    } else {
+        168.0
+    };
+    ui.add_sized(
+        [search_width, ui::CONTROL_HEIGHT],
+        ui::text_input(&mut state.log_search, "搜索日志"),
+    );
+}
+
+/// 绘制日志方向筛选及操作按钮；调用方决定单行或独立操作行布局。
+fn render_log_toolbar_controls(
+    ui: &mut egui::Ui,
+    state: &mut CommonCommunicationState,
+    kind: CommunicationKind,
+    actions: &mut Vec<AppAction>,
+) {
+    if log_toolbar_action(ui, ui::AppIcon::Export, "导出", "导出日志", false) {
+        actions.push(AppAction::ExportCommunicationLog {
+            content: state.log.export(state.receive_format),
+            file_name: format!("{}.log", kind.tool_id()),
+        });
+    }
+    if log_toolbar_action(
+        ui,
+        ui::AppIcon::Copy,
+        "复制",
+        "复制通信记录",
+        false,
+    ) {
+        actions.push(AppAction::CopyText(state.log.export(state.receive_format)));
+    }
+    if log_toolbar_action(ui, ui::AppIcon::Clear, "清空", "清空通信记录", false) {
+        state.log.clear();
+        state.selected_record = None;
+    }
+    let (scroll_icon, scroll_label, scroll_tooltip) = auto_scroll_presentation(state.auto_scroll);
+    if log_toolbar_action(
+        ui,
+        scroll_icon,
+        scroll_label,
+        scroll_tooltip,
+        state.auto_scroll,
+    ) {
+        state.auto_scroll = !state.auto_scroll;
+    }
+    ui.separator();
+    egui::ComboBox::from_id_salt((kind.tool_id(), "direction-filter"))
+        .selected_text(state.direction_filter.label())
+        .show_ui(ui, |ui| {
+            for filter in DirectionFilter::ALL {
+                ui.selectable_value(&mut state.direction_filter, filter, filter.label());
+            }
+        });
+    ui.label("方向");
+}
+
 fn log_toolbar_action(
     ui: &mut egui::Ui,
     icon: ui::AppIcon,
     label: &str,
     tooltip: &str,
+    selected: bool,
 ) -> bool {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        let icon_clicked = ui::icon_button_sized(ui, icon, tooltip, false, ui::COMPACT_CONTROL_HEIGHT)
-            .clicked();
+        let icon_clicked = ui::icon_button_sized(
+            ui,
+            icon,
+            tooltip,
+            selected,
+            ui::COMPACT_CONTROL_HEIGHT,
+        )
+        .clicked();
+        let label = if selected {
+            RichText::new(label)
+                .size(12.0)
+                .strong()
+                .color(ui::accent(ui))
+        } else {
+            RichText::new(label).size(12.0)
+        };
         let label_clicked = ui
-            .add(
-                egui::Label::new(RichText::new(label).size(12.0))
-                    .sense(egui::Sense::click()),
-            )
+            .add(egui::Label::new(label).sense(egui::Sense::click()))
             .clicked();
         icon_clicked || label_clicked
     })
     .inner
+}
+
+fn auto_scroll_presentation(enabled: bool) -> (ui::AppIcon, &'static str, &'static str) {
+    if enabled {
+        (ui::AppIcon::Pause, "自动滚动中", "暂停自动滚动")
+    } else {
+        (ui::AppIcon::Resume, "滚动已暂停", "恢复自动滚动")
+    }
 }
 
 fn format_segment(ui: &mut egui::Ui, format: &mut PayloadFormat, id: (&'static str, &'static str)) {
@@ -1782,9 +2035,9 @@ fn format_segment(ui: &mut egui::Ui, format: &mut PayloadFormat, id: (&'static s
 
 fn format_bytes(bytes: usize) -> String {
     if bytes >= 1024 * 1024 {
-        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     } else if bytes >= 1024 {
-        format!("{:.1} KiB", bytes as f64 / 1024.0)
+        format!("{:.1} KB", bytes as f64 / 1024.0)
     } else {
         format!("{bytes} B")
     }
@@ -1800,21 +2053,22 @@ fn format_elapsed(duration: Duration) -> String {
 
 fn record_columns(available_width: f32) -> [f32; 5] {
     let content_width = available_width.max(540.0);
-    if available_width < 760.0 {
+    if content_width < 760.0 {
         let endpoint = (content_width * 0.22).clamp(140.0, 170.0);
         let data = (content_width - 120.0 - 68.0 - endpoint - 72.0).max(200.0);
         [120.0, 68.0, endpoint, 72.0, data]
     } else {
-        let endpoint = (content_width * 0.27).clamp(220.0, 300.0);
+        let endpoint = (content_width * 0.25).clamp(220.0, 360.0);
         let data = (content_width - 132.0 - 78.0 - endpoint - 82.0).max(220.0);
         [132.0, 78.0, endpoint, 82.0, data]
     }
 }
 
-fn render_record_header(ui: &mut egui::Ui, height: f32) {
-    let widths = record_columns(ui.available_width());
+fn render_record_header(ui: &mut egui::Ui, height: f32, available_width: f32) {
+    let widths = record_columns(available_width);
+    let total_width = widths.iter().sum::<f32>().max(available_width);
     let (response, painter) = ui.allocate_painter(
-        egui::vec2(widths.iter().sum(), height),
+        egui::vec2(total_width, height),
         egui::Sense::hover(),
     );
     let palette = ui::palette_for_ui(ui);
@@ -1839,22 +2093,22 @@ fn render_record(
     ui: &mut egui::Ui,
     record: &CommunicationRecord,
     format: PayloadFormat,
+    row_index: usize,
     row_height: f32,
-) {
+    available_width: f32,
+) -> bool {
     let palette = ui::palette_for_ui(ui);
     let direction_color = match record.direction {
         CommunicationDirection::Incoming => palette.receive_text,
         CommunicationDirection::Outgoing => palette.success_text,
         CommunicationDirection::Status => palette.warning_text,
     };
-    let content = record
-        .note
-        .clone()
-        .unwrap_or_else(|| render_payload(&record.payload, format));
-    let widths = record_columns(ui.available_width());
+    let content = record.display_content(format);
+    let widths = record_columns(available_width);
+    let total_width = widths.iter().sum::<f32>().max(available_width);
     let (response, painter) = ui.allocate_painter(
-        egui::vec2(widths.iter().sum(), row_height),
-        egui::Sense::hover(),
+        egui::vec2(total_width, row_height),
+        egui::Sense::click(),
     );
     let rect = response.rect;
     painter.rect_filled(rect, egui::CornerRadius::ZERO, palette.surface);
@@ -1894,6 +2148,107 @@ fn render_record(
         egui::FontId::monospace(13.5),
         direction_color,
     );
+    let byte_count = record.payload.len().to_string();
+    let tooltip_cells: [(&str, egui::FontId); 5] = [
+        (record.timestamp.as_str(), egui::FontId::monospace(13.5)),
+        (
+            record_direction_label(record.direction),
+            egui::FontId::proportional(14.0),
+        ),
+        (record.endpoint.as_str(), egui::FontId::monospace(13.5)),
+        (byte_count.as_str(), egui::FontId::monospace(13.5)),
+        (content.as_str(), egui::FontId::monospace(13.5)),
+    ];
+    for (cell_index, (text, font)) in tooltip_cells.into_iter().enumerate() {
+        let cell = record_cell(rect, &widths, cell_index);
+        ui::show_clipped_text_tooltip(
+            ui,
+            cell,
+            ("communication-record-cell", row_index, cell_index),
+            text,
+            font,
+            (cell.width() - 24.0).max(0.0),
+        );
+    }
+    response.clicked()
+}
+
+fn render_record_detail(
+    context: &egui::Context,
+    record: &CommunicationRecord,
+    receive_format: PayloadFormat,
+    actions: &mut Vec<AppAction>,
+) -> bool {
+    let mut open = true;
+    let mut close_requested = false;
+    let content = record.display_content(receive_format);
+    let display_format = if record.note.is_some() {
+        "状态".to_owned()
+    } else {
+        record.display_format(receive_format).label().to_owned()
+    };
+    egui::Window::new("报文详情")
+        .id(egui::Id::new("communication-record-detail"))
+        .open(&mut open)
+        .resizable(true)
+        .collapsible(false)
+        .default_size(egui::vec2(680.0, 360.0))
+        .min_size(egui::vec2(420.0, 300.0))
+        .show(context, |ui| {
+            egui::Grid::new("communication-record-detail-metadata")
+                .num_columns(2)
+                .spacing(egui::vec2(ui::SPACE_12, ui::SPACE_8))
+                .show(ui, |ui| {
+                    record_detail_field(ui, "本地时间", &record.timestamp);
+                    record_detail_field(ui, "方向", record_direction_label(record.direction));
+                    record_detail_field(ui, "端点", &record.endpoint);
+                    record_detail_field(ui, "字节数", &record.payload.len().to_string());
+                    record_detail_field(ui, "显示格式", &display_format);
+                });
+            ui.add_space(ui::SPACE_8);
+            ui.separator();
+            ui.add_space(ui::SPACE_8);
+            ui.label(RichText::new("完整内容").strong());
+            ui.add_space(ui::SPACE_4);
+            let content_height = detail_content_height(ui.available_height());
+            egui::ScrollArea::vertical()
+                .id_salt("communication-record-detail-content")
+                .auto_shrink([false, false])
+                .max_height(content_height)
+                .min_scrolled_height(DETAIL_CONTENT_MIN_HEIGHT)
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.add(
+                        egui::Label::new(RichText::new(&content).monospace())
+                            .wrap()
+                            .selectable(true),
+                    );
+                });
+            ui.add_space(ui::SPACE_8);
+            ui.horizontal(|ui| {
+                if ui::primary_button(ui, "复制内容").clicked() {
+                    actions.push(AppAction::CopyText(content.clone()));
+                }
+                if ui::secondary_button(ui, "关闭").clicked() {
+                    close_requested = true;
+                }
+            });
+        });
+    open && !close_requested
+}
+
+fn record_detail_field(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.label(RichText::new(label).color(ui.visuals().weak_text_color()));
+    ui.add(
+        egui::Label::new(RichText::new(value).monospace())
+            .wrap()
+            .selectable(true),
+    );
+    ui.end_row();
+}
+
+fn detail_content_height(available_height: f32) -> f32 {
+    (available_height * 0.72).clamp(DETAIL_CONTENT_MIN_HEIGHT, DETAIL_CONTENT_MAX_HEIGHT)
 }
 
 fn record_cell(row: egui::Rect, widths: &[f32], index: usize) -> egui::Rect {
@@ -1995,7 +2350,7 @@ fn render_tcp_peer_list(
                 ui.set_min_height(height);
                 for peer in peers {
                     ui.horizontal(|ui| {
-                        ui.add_sized(
+                        let endpoint_response = ui.add_sized(
                             [widths[0], 34.0],
                             egui::Label::new(
                                 RichText::new(&peer.endpoint)
@@ -2004,21 +2359,37 @@ fn render_tcp_peer_list(
                             )
                             .truncate(),
                         );
-                        ui.add_sized(
+                        ui::show_clipped_text_tooltip(
+                            ui,
+                            endpoint_response.rect,
+                            ("tcp-peer-cell", peer.id, 0),
+                            &peer.endpoint,
+                            egui::FontId::monospace(14.0),
+                            (widths[0] - 12.0).max(0.0),
+                        );
+                        let connected_response = ui.add_sized(
                             [widths[1], 34.0],
                             egui::Label::new(RichText::new(&peer.connected_at).monospace())
                                 .truncate(),
                         );
+                        ui::show_clipped_text_tooltip(
+                            ui,
+                            connected_response.rect,
+                            ("tcp-peer-cell", peer.id, 1),
+                            &peer.connected_at,
+                            egui::FontId::monospace(14.0),
+                            (widths[1] - 12.0).max(0.0),
+                        );
                         ui.add_sized(
                             [widths[2], 34.0],
                             egui::Label::new(
-                                RichText::new(format_u64_bytes(peer.received_bytes)).monospace(),
+                                RichText::new(peer.received_bytes.to_string()).monospace(),
                             ),
                         );
                         ui.add_sized(
                             [widths[3], 34.0],
                             egui::Label::new(
-                                RichText::new(format_u64_bytes(peer.sent_bytes)).monospace(),
+                                RichText::new(peer.sent_bytes.to_string()).monospace(),
                             ),
                         );
                         if ui
@@ -2053,6 +2424,7 @@ fn peer_columns(available_width: f32) -> [f32; 5] {
     }
 }
 
+#[allow(dead_code)]
 fn format_u64_bytes(bytes: u64) -> String {
     if bytes >= 1024 * 1024 {
         format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
@@ -2064,6 +2436,14 @@ fn format_u64_bytes(bytes: u64) -> String {
 }
 
 fn review_records(outgoing_endpoint: &str, incoming_endpoint: &str) -> Vec<CommunicationRecord> {
+    review_records_custom(outgoing_endpoint, incoming_endpoint, b"Welcome to ToolDeck\r\n")
+}
+
+fn review_records_custom(
+    outgoing_endpoint: &str,
+    incoming_endpoint: &str,
+    welcome_payload: &[u8],
+) -> Vec<CommunicationRecord> {
     [
         (
             "14:22:31.123",
@@ -2098,7 +2478,7 @@ fn review_records(outgoing_endpoint: &str, incoming_endpoint: &str) -> Vec<Commu
         (
             "14:22:40.102",
             CommunicationDirection::Incoming,
-            b"Welcome to ToolDeck\r\n".as_slice(),
+            welcome_payload,
         ),
         (
             "14:22:45.332",
@@ -2117,6 +2497,8 @@ fn review_records(outgoing_endpoint: &str, incoming_endpoint: &str) -> Vec<Commu
             }
         },
         payload: payload.to_vec(),
+        payload_format: (direction == CommunicationDirection::Outgoing)
+            .then_some(PayloadFormat::Text),
         note: None,
     })
     .collect()
@@ -2156,6 +2538,8 @@ fn review_server_records(
                 }
             },
             payload: payload.to_vec(),
+            payload_format: (direction == CommunicationDirection::Outgoing)
+                .then_some(PayloadFormat::Text),
             note: None,
         }),
     );
@@ -2188,8 +2572,10 @@ mod tests {
     fn record_area_uses_viewport_ratio_with_bounds() {
         assert_eq!(communication_log_height(500.0), COMPACT_LOG_HEIGHT);
         assert_eq!(communication_log_height(640.0), COMPACT_LOG_HEIGHT);
-        assert_eq!(communication_log_height(1_000.0), 290.0);
+        assert_eq!(communication_log_height(1_000.0), 280.0);
         assert_eq!(communication_log_height(3_000.0), MAX_LOG_HEIGHT);
+        assert_eq!(detail_content_height(100.0), DETAIL_CONTENT_MIN_HEIGHT);
+        assert_eq!(detail_content_height(400.0), DETAIL_CONTENT_MAX_HEIGHT);
     }
 
     #[test]
@@ -2212,5 +2598,39 @@ mod tests {
             "00:12:48"
         );
         assert_eq!(format_elapsed(Duration::from_secs(3_661)), "01:01:01");
+    }
+
+    #[test]
+    fn auto_scroll_presentation_exposes_both_states_and_actions() {
+        assert_eq!(
+            auto_scroll_presentation(true),
+            (ui::AppIcon::Pause, "自动滚动中", "暂停自动滚动")
+        );
+        assert_eq!(
+            auto_scroll_presentation(false),
+            (ui::AppIcon::Resume, "滚动已暂停", "恢复自动滚动")
+        );
+    }
+
+    #[test]
+    fn record_search_uses_the_effective_send_and_receive_formats() {
+        let outgoing = CommunicationRecord {
+            timestamp: "12:00:00.000".into(),
+            direction: CommunicationDirection::Outgoing,
+            endpoint: "peer".into(),
+            payload: "发送".as_bytes().to_vec(),
+            payload_format: Some(PayloadFormat::Text),
+            note: None,
+        };
+        let incoming = CommunicationRecord {
+            direction: CommunicationDirection::Incoming,
+            payload: b"RX".to_vec(),
+            payload_format: None,
+            ..outgoing.clone()
+        };
+
+        assert!(record_matches(&outgoing, "发送", PayloadFormat::Hex));
+        assert!(record_matches(&incoming, "52 58", PayloadFormat::Hex));
+        assert!(!record_matches(&incoming, "RX", PayloadFormat::Hex));
     }
 }

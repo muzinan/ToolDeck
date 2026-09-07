@@ -19,7 +19,6 @@ pub use communication::{
     MAX_UDP_PAYLOAD_BYTES, PayloadFormat, RECORD_BATCH_INTERVAL_MS, SerialDataBits,
     SerialDebugConfig, SerialFlowControl, SerialParity, SerialPortDescriptor, SerialStopBits,
     TcpDebugConfig, TcpDebugMode, UdpDebugConfig, UdpMulticastConfig, decode_payload,
-    render_payload,
 };
 pub use dns::{DnsRecord, DnsRecordType, DnsResult};
 pub use error::AppError;

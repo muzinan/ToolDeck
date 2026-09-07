@@ -215,16 +215,14 @@ impl ToolModule for DnsLookupTool {
                         .suffix(" 秒"),
                 );
                 ui.add_enabled_ui(!self.busy, |ui| {
-                    if ui::primary_button(ui, "查询").clicked() {
+                    if ui::primary_button_sized(ui, "查询", [78.0, ui::CONTROL_HEIGHT]).clicked() {
                         submit = true;
                     }
                 });
-                if ui
-                    .add_enabled(
-                        self.busy || self.periodic_active,
-                        egui::Button::new(RichText::new("停止").color(palette.danger_text)),
-                    )
+                let is_active = self.busy || self.periodic_active;
+                if ui::danger_outline_button_sized(ui, "停止", [78.0, ui::CONTROL_HEIGHT], is_active)
                     .clicked()
+                    && is_active
                 {
                     self.periodic_active = false;
                     self.next_run = None;
@@ -374,7 +372,7 @@ impl DnsLookupTool {
 
     fn render_results(&mut self, ui: &mut egui::Ui, actions: &mut Vec<AppAction>) {
         let available = ui.available_width();
-        let panel_height = (ui.ctx().screen_rect().height() * 0.69).clamp(520.0, 720.0);
+        let panel_height = (ui.ctx().screen_rect().height() * 0.58).clamp(420.0, 620.0);
         if available < 820.0 {
             self.render_record_panel(ui, actions, panel_height * 0.62);
             ui.add_space(ui::SPACE_12);
@@ -419,13 +417,13 @@ impl DnsLookupTool {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(result) = result {
                         let content = dns_record_lines(result).join("\n");
-                        if ui::small_action_button(ui, "导出").clicked() {
+                        if ui::small_action_button(ui, "⤤ 导出").clicked() {
                             actions.push(AppAction::ExportText {
                                 content: content.clone(),
                                 file_name: "tooldeck-dns.log".into(),
                             });
                         }
-                        if ui::small_action_button(ui, "复制").clicked() {
+                        if ui::small_action_button(ui, "📋 复制").clicked() {
                             actions.push(AppAction::CopyText(content));
                         }
                     }
@@ -438,15 +436,15 @@ impl DnsLookupTool {
             let column_widths = dns_result_column_widths(ui.available_width());
             ui.scope(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                render_fixed_table_header(
-                    ui,
-                    &column_widths,
-                    &["时间", "类型", "名称", "值", "TTL", "耗时"],
-                );
                 egui::ScrollArea::both()
                     .max_height((height - 116.0).max(180.0))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        render_fixed_table_header(
+                            ui,
+                            &column_widths,
+                            &["时间", "类型", "名称", "值", "TTL", "耗时"],
+                        );
                         ui.spacing_mut().item_spacing.y = 0.0;
                         if let Some(result) = result {
                             for (index, record) in result
@@ -502,15 +500,15 @@ impl DnsLookupTool {
             let column_widths = dns_history_column_widths(ui.available_width());
             ui.scope(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                render_fixed_table_header(
-                    ui,
-                    &column_widths,
-                    &["时间", "域名", "类型", "结果数", "耗时"],
-                );
                 egui::ScrollArea::both()
                     .max_height((height - 94.0).max(160.0))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        render_fixed_table_header(
+                            ui,
+                            &column_widths,
+                            &["时间", "域名", "类型", "结果数", "耗时"],
+                        );
                         ui.spacing_mut().item_spacing.y = 0.0;
                         for (index, entry) in self.history.iter().enumerate() {
                             render_fixed_table_row(
@@ -576,6 +574,7 @@ fn dns_record_lines(result: &DnsResult) -> Vec<String> {
         .collect()
 }
 
+#[allow(dead_code)]
 fn labeled_family_control(
     ui: &mut egui::Ui,
     id: &'static str,
@@ -605,6 +604,7 @@ fn labeled_family_control(
     });
 }
 
+#[allow(dead_code)]
 fn labeled_drag_u32(
     ui: &mut egui::Ui,
     label: &str,
@@ -637,7 +637,7 @@ fn render_statistic_strip(ui: &mut egui::Ui, values: &[(&str, String, egui::Colo
 
     let palette = ui::palette_for_ui(ui);
     let (response, painter) = ui.allocate_painter(
-        egui::vec2(ui.available_width(), 56.0),
+        egui::vec2(ui.available_width(), 48.0),
         egui::Sense::hover(),
     );
     let cell_width = response.rect.width() / values.len() as f32;
@@ -672,6 +672,10 @@ fn render_statistic_strip(ui: &mut egui::Ui, values: &[(&str, String, egui::Colo
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "图表绘制参数按调用点完整展开以保持数值含义直观"
+)]
 fn render_line_chart(
     ui: &mut egui::Ui,
     values: &[Option<f64>],
@@ -836,9 +840,15 @@ impl ToolModule for PingTool {
         ui::card(ui, |ui| {
             ui.set_min_width(ui.available_width());
             let mut submit = false;
-            ui.horizontal_wrapped(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("目标地址").size(12.0).color(palette.weak));
+            let field_widths = [190.0, 174.0, 128.0, 64.0, 74.0, 74.0, 78.0, 78.0];
+            ui::responsive_parameter_row(ui, &field_widths, ui::SPACE_8, |ui| {
+                ui::parameter_group(ui, 190.0, |ui| {
+                    ui.add_sized(
+                        [190.0, 16.0],
+                        egui::Label::new(
+                            RichText::new("目标地址").size(12.0).color(palette.weak),
+                        ),
+                    );
                     let input = ui.add_sized(
                         [190.0, ui::CONTROL_HEIGHT],
                         ui::text_input(&mut self.host, "主机或 IP"),
@@ -846,9 +856,39 @@ impl ToolModule for PingTool {
                     submit |=
                         input.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
                 });
-                labeled_family_control(ui, "ping-family", "地址族", &mut self.family, palette);
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("模式").size(12.0).color(palette.weak));
+
+                ui::parameter_group(ui, 174.0, |ui| {
+                    ui.add_sized(
+                        [174.0, 16.0],
+                        egui::Label::new(
+                            RichText::new("地址族").size(12.0).color(palette.weak),
+                        ),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        for value in [
+                            PingAddressFamily::Auto,
+                            PingAddressFamily::V4,
+                            PingAddressFamily::V6,
+                        ] {
+                            if ui
+                                .add_sized(
+                                    [58.0, ui::CONTROL_HEIGHT],
+                                    egui::Button::selectable(self.family == value, value.label()),
+                                )
+                                .clicked()
+                            {
+                                self.family = value;
+                            }
+                        }
+                    });
+                });
+
+                ui::parameter_group(ui, 128.0, |ui| {
+                    ui.add_sized(
+                        [128.0, 16.0],
+                        egui::Label::new(RichText::new("模式").size(12.0).color(palette.weak)),
+                    );
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
                         if ui
@@ -871,34 +911,68 @@ impl ToolModule for PingTool {
                         }
                     });
                 });
-                labeled_drag_u32(ui, "次数", &mut self.count, 1..=100, "", !self.continuous);
-                labeled_drag_u32(ui, "超时(ms)", &mut self.timeout_ms, 100..=10_000, "", true);
-                labeled_drag_u32(
-                    ui,
-                    "间隔(ms)",
-                    &mut self.interval_ms,
-                    100..=60_000,
-                    "",
-                    true,
-                );
-                ui.vertical(|ui| {
-                    ui.label(" ");
-                    ui.add_enabled_ui(!self.busy, |ui| {
-                        submit |= ui::primary_button_sized(ui, "开始", [78.0, ui::CONTROL_HEIGHT])
-                            .clicked();
+
+                ui::parameter_group(ui, 64.0, |ui| {
+                    ui.add_sized(
+                        [64.0, 16.0],
+                        egui::Label::new(RichText::new("次数").size(12.0).color(palette.weak)),
+                    );
+                    ui.add_enabled_ui(!self.continuous, |ui| {
+                        ui.add_sized(
+                            [64.0, ui::CONTROL_HEIGHT],
+                            egui::DragValue::new(&mut self.count).range(1..=100),
+                        );
                     });
                 });
-                ui.vertical(|ui| {
-                    ui.label(" ");
-                    if ui
-                        .add_enabled(
-                            self.busy,
-                            egui::Button::new(
-                                RichText::new("停止").color(palette.danger_text).strong(),
-                            )
-                            .min_size(egui::vec2(78.0, ui::CONTROL_HEIGHT)),
+
+                ui::parameter_group(ui, 74.0, |ui| {
+                    ui.add_sized(
+                        [74.0, 16.0],
+                        egui::Label::new(
+                            RichText::new("超时(ms)").size(12.0).color(palette.weak),
+                        ),
+                    );
+                    ui.add_sized(
+                        [74.0, ui::CONTROL_HEIGHT],
+                        egui::DragValue::new(&mut self.timeout_ms).range(100..=10_000),
+                    );
+                });
+
+                ui::parameter_group(ui, 74.0, |ui| {
+                    ui.add_sized(
+                        [74.0, 16.0],
+                        egui::Label::new(
+                            RichText::new("间隔(ms)").size(12.0).color(palette.weak),
+                        ),
+                    );
+                    ui.add_sized(
+                        [74.0, ui::CONTROL_HEIGHT],
+                        egui::DragValue::new(&mut self.interval_ms).range(100..=60_000),
+                    );
+                });
+
+                ui::parameter_group(ui, 78.0, |ui| {
+                    ui.allocate_space(egui::vec2(78.0, 16.0));
+                    ui.add_enabled_ui(!self.busy, |ui| {
+                        submit |= ui::primary_button_sized(
+                            ui,
+                            "开始",
+                            [78.0, ui::CONTROL_HEIGHT],
                         )
-                        .clicked()
+                        .clicked();
+                    });
+                });
+
+                ui::parameter_group(ui, 78.0, |ui| {
+                    ui.allocate_space(egui::vec2(78.0, 16.0));
+                    if ui::danger_outline_button_sized(
+                        ui,
+                        "停止",
+                        [78.0, ui::CONTROL_HEIGHT],
+                        self.busy,
+                    )
+                    .clicked()
+                        && self.busy
                     {
                         actions.push(AppAction::StopPing);
                     }
@@ -1078,20 +1152,20 @@ impl PingTool {
             render_statistic_strip(ui, &values);
         });
         ui.add_space(ui::SPACE_4);
-        let table_height = (ui.ctx().screen_rect().height() * 0.28).clamp(244.0, 272.0);
+        let table_height = (ui.ctx().screen_rect().height() * 0.24).clamp(210.0, 236.0);
         ui::table_card(ui, |ui| {
             let column_widths = ping_table_column_widths(ui.available_width());
-            render_fixed_table_header(
-                ui,
-                &column_widths,
-                &["序号", "时间", "地址", "字节", "TTL", "延迟", "状态"],
-            );
             egui::ScrollArea::both()
                 .max_height(table_height)
                 .min_scrolled_height(table_height)
                 .auto_shrink([false, false])
                 .stick_to_bottom(self.busy && !self.review_seeded)
                 .show(ui, |ui| {
+                    render_fixed_table_header(
+                        ui,
+                        &column_widths,
+                        &["序号", "时间", "地址", "字节", "TTL", "延迟", "状态"],
+                    );
                     ui.spacing_mut().item_spacing.y = 0.0;
                     for (index, sample) in samples.iter().enumerate() {
                         let success = sample.elapsed_ms.is_some();
@@ -1132,7 +1206,7 @@ impl PingTool {
                                     palette.danger_text
                                 },
                             ],
-                            34.0,
+                            32.0,
                         );
                     }
                 });
@@ -1203,7 +1277,7 @@ fn render_fixed_table_header(ui: &mut egui::Ui, column_widths: &[f32], labels: &
     let palette = ui::palette_for_ui(ui);
     let total_width = column_widths.iter().sum();
     let (response, painter) =
-        ui.allocate_painter(egui::vec2(total_width, 32.0), egui::Sense::hover());
+        ui.allocate_painter(egui::vec2(total_width, 28.0), egui::Sense::hover());
     painter.rect_filled(
         response.rect,
         egui::CornerRadius::ZERO,
@@ -1243,7 +1317,7 @@ fn render_fixed_table_row(
     values: &[String],
     colors: &[egui::Color32],
 ) {
-    render_fixed_table_row_with_height(ui, column_widths, row_index, values, colors, 38.0);
+    render_fixed_table_row_with_height(ui, column_widths, row_index, values, colors, 32.0);
 }
 
 fn render_fixed_table_row_with_height(
@@ -1278,6 +1352,14 @@ fn render_fixed_table_row_with_height(
             value,
             egui::FontId::monospace(12.0),
             colors.get(index).copied().unwrap_or(palette.text),
+        );
+        ui::show_clipped_text_tooltip(
+            ui,
+            cell,
+            ("fixed-table-cell", row_index, index),
+            value,
+            egui::FontId::monospace(12.0),
+            (cell.width() - 16.0).max(0.0),
         );
         if index > 0 {
             painter.line_segment(
@@ -1339,9 +1421,13 @@ impl ToolModule for TcpProbeTool {
         ui::card(ui, |ui| {
             ui.set_min_width(ui.available_width());
             let mut submit = false;
-            ui.horizontal_wrapped(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("主机").size(12.0).color(palette.weak));
+            let field_widths = [165.0, 74.0, 174.0, 74.0, 74.0, 74.0, 92.0, 78.0];
+            ui::responsive_parameter_row(ui, &field_widths, ui::SPACE_8, |ui| {
+                ui::parameter_group(ui, 165.0, |ui| {
+                    ui.add_sized(
+                        [165.0, 16.0],
+                        egui::Label::new(RichText::new("主机").size(12.0).color(palette.weak)),
+                    );
                     let input = ui.add_sized(
                         [165.0, ui::CONTROL_HEIGHT],
                         ui::text_input(&mut self.host, "主机名或 IP"),
@@ -1349,50 +1435,108 @@ impl ToolModule for TcpProbeTool {
                     submit |=
                         input.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
                 });
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("端口").size(12.0).color(palette.weak));
-                    ui.add(
+
+                ui::parameter_group(ui, 74.0, |ui| {
+                    ui.add_sized(
+                        [74.0, 16.0],
+                        egui::Label::new(RichText::new("端口").size(12.0).color(palette.weak)),
+                    );
+                    ui.add_sized(
+                        [74.0, ui::CONTROL_HEIGHT],
                         egui::DragValue::new(&mut self.port)
                             .range(1..=65_535)
                             .min_decimals(0),
                     );
                 });
-                labeled_family_control(
-                    ui,
-                    "tcp-probe-family",
-                    "地址类型",
-                    &mut self.family,
-                    palette,
-                );
-                labeled_drag_u32(ui, "超时(ms)", &mut self.timeout_ms, 100..=30_000, "", true);
-                labeled_drag_u32(ui, "尝试次数", &mut self.attempts, 1..=100, " 次", true);
-                labeled_drag_u32(
-                    ui,
-                    "间隔(ms)",
-                    &mut self.interval_ms,
-                    100..=60_000,
-                    "",
-                    true,
-                );
-                ui.vertical(|ui| {
-                    ui.label(" ");
-                    ui.add_enabled_ui(!self.busy, |ui| {
-                        submit |=
-                            ui::primary_button_sized(ui, "开始测试", [92.0, ui::CONTROL_HEIGHT])
-                                .clicked();
+
+                ui::parameter_group(ui, 174.0, |ui| {
+                    ui.add_sized(
+                        [174.0, 16.0],
+                        egui::Label::new(
+                            RichText::new("地址类型").size(12.0).color(palette.weak),
+                        ),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        for value in [
+                            PingAddressFamily::Auto,
+                            PingAddressFamily::V4,
+                            PingAddressFamily::V6,
+                        ] {
+                            if ui
+                                .add_sized(
+                                    [58.0, ui::CONTROL_HEIGHT],
+                                    egui::Button::selectable(self.family == value, value.label()),
+                                )
+                                .clicked()
+                            {
+                                self.family = value;
+                            }
+                        }
                     });
                 });
-                ui.vertical(|ui| {
-                    ui.label(" ");
-                    if ui
-                        .add_enabled(
-                            self.busy,
-                            egui::Button::new(
-                                RichText::new("停止").color(palette.danger_text).strong(),
-                            )
-                            .min_size(egui::vec2(78.0, ui::CONTROL_HEIGHT)),
+
+                ui::parameter_group(ui, 74.0, |ui| {
+                    ui.add_sized(
+                        [74.0, 16.0],
+                        egui::Label::new(
+                            RichText::new("超时(ms)").size(12.0).color(palette.weak),
+                        ),
+                    );
+                    ui.add_sized(
+                        [74.0, ui::CONTROL_HEIGHT],
+                        egui::DragValue::new(&mut self.timeout_ms).range(100..=30_000),
+                    );
+                });
+
+                ui::parameter_group(ui, 74.0, |ui| {
+                    ui.add_sized(
+                        [74.0, 16.0],
+                        egui::Label::new(
+                            RichText::new("尝试次数").size(12.0).color(palette.weak),
+                        ),
+                    );
+                    ui.add_sized(
+                        [74.0, ui::CONTROL_HEIGHT],
+                        egui::DragValue::new(&mut self.attempts).range(1..=100),
+                    );
+                });
+
+                ui::parameter_group(ui, 74.0, |ui| {
+                    ui.add_sized(
+                        [74.0, 16.0],
+                        egui::Label::new(
+                            RichText::new("间隔(ms)").size(12.0).color(palette.weak),
+                        ),
+                    );
+                    ui.add_sized(
+                        [74.0, ui::CONTROL_HEIGHT],
+                        egui::DragValue::new(&mut self.interval_ms).range(100..=60_000),
+                    );
+                });
+
+                ui::parameter_group(ui, 92.0, |ui| {
+                    ui.allocate_space(egui::vec2(92.0, 16.0));
+                    ui.add_enabled_ui(!self.busy, |ui| {
+                        submit |= ui::primary_button_sized(
+                            ui,
+                            "开始测试",
+                            [92.0, ui::CONTROL_HEIGHT],
                         )
-                        .clicked()
+                        .clicked();
+                    });
+                });
+
+                ui::parameter_group(ui, 78.0, |ui| {
+                    ui.allocate_space(egui::vec2(78.0, 16.0));
+                    if ui::danger_outline_button_sized(
+                        ui,
+                        "停止",
+                        [78.0, ui::CONTROL_HEIGHT],
+                        self.busy,
+                    )
+                    .clicked()
+                        && self.busy
                     {
                         actions.push(AppAction::StopTcpProbe);
                     }
@@ -1558,20 +1702,20 @@ impl TcpProbeTool {
             render_statistic_strip(ui, &values);
         });
         ui.add_space(ui::SPACE_12);
-        let table_height = (ui.ctx().screen_rect().height() * 0.35).clamp(340.0, 360.0);
+        let table_height = (ui.ctx().screen_rect().height() * 0.30).clamp(280.0, 320.0);
         ui::table_card(ui, |ui| {
             let column_widths = tcp_probe_table_column_widths(ui.available_width());
-            render_fixed_table_header(
-                ui,
-                &column_widths,
-                &["次数", "开始时间", "地址", "端口", "状态", "延迟", "错误"],
-            );
             egui::ScrollArea::both()
                 .max_height(table_height)
                 .min_scrolled_height(table_height)
                 .auto_shrink([false, false])
                 .stick_to_bottom(self.busy && !self.review_seeded)
                 .show(ui, |ui| {
+                    render_fixed_table_header(
+                        ui,
+                        &column_widths,
+                        &["次数", "开始时间", "地址", "端口", "状态", "延迟", "错误"],
+                    );
                     ui.spacing_mut().item_spacing.y = 0.0;
                     for (index, (number, attempt)) in attempts.iter().enumerate() {
                         let succeeded = attempt.status == "成功";
@@ -1619,7 +1763,7 @@ impl TcpProbeTool {
                                     palette.danger_text
                                 },
                             ],
-                            34.0,
+                            32.0,
                         );
                     }
                 });

@@ -3,6 +3,7 @@
 
 use std::{
     env, fs,
+    hash::Hash,
     path::{Path, PathBuf},
 };
 
@@ -17,17 +18,117 @@ const FONT_CANDIDATES: [&str; 4] = ["msyh.ttc", "simhei.ttf", "simsun.ttc", "Den
 const MONO_FONT_CANDIDATES: [&str; 3] = ["CascadiaMono.ttf", "CascadiaCode.ttf", "consola.ttf"];
 
 /// 设计系统间距令牌，单位为 egui point。
-pub const SPACE_4: f32 = 4.0;
-pub const SPACE_8: f32 = 8.0;
-pub const SPACE_12: f32 = 12.0;
-pub const SPACE_16: f32 = 16.0;
+pub const SPACE_4: f32 = 3.0;
+pub const SPACE_8: f32 = 6.0;
+pub const SPACE_12: f32 = 10.0;
+pub const SPACE_16: f32 = 14.0;
+pub const SPACE_24: f32 = 20.0;
 
 /// 页面内容的标准横向留白，单位为 egui point。
 pub const PAGE_PADDING: f32 = 16.0;
 
 /// 标准控件高度规范
-pub const CONTROL_HEIGHT: f32 = 34.0;
-pub const COMPACT_CONTROL_HEIGHT: f32 = 26.0;
+pub const CONTROL_HEIGHT: f32 = 30.0;
+pub const COMPACT_CONTROL_HEIGHT: f32 = 24.0;
+
+/// 判断单行文字的实际排版宽度是否超过可见宽度。
+pub fn text_overflows_width(text_width: f32, available_width: f32) -> bool {
+    text_width > available_width.max(0.0) + 0.5
+}
+
+/// 为自绘单元格增加全文悬停提示，并返回该文字是否发生裁剪。
+pub fn show_clipped_text_tooltip(
+    ui: &mut egui::Ui,
+    cell: egui::Rect,
+    id_source: impl Hash,
+    text: &str,
+    font: egui::FontId,
+    available_width: f32,
+) -> bool {
+    let text_width = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), font, Color32::WHITE)
+        .size()
+        .x;
+    let clipped = text_overflows_width(text_width, available_width);
+    if clipped {
+        ui.interact(cell, ui.id().with(id_source), egui::Sense::hover())
+            .on_hover_text(text);
+    }
+    clipped
+}
+
+/// 判断一组固定宽度控件能否在当前可用宽度内保持单行。
+///
+/// `field_widths` 来自页面现有控件宽度，`gap` 使用当前设计系统的横向间距。
+pub fn fixed_row_fits(available_width: f32, field_widths: &[f32], gap: f32) -> bool {
+    let fields_width = field_widths.iter().copied().sum::<f32>();
+    let gaps_width = gap.max(0.0) * field_widths.len().saturating_sub(1) as f32;
+    fields_width + gaps_width <= available_width.max(0.0)
+}
+
+/// 将参数组宽度限制在当前父容器可用范围内，避免子控件的自然宽度传播到页面。
+pub fn bounded_group_width(available_width: f32, requested_width: f32) -> f32 {
+    requested_width.max(0.0).min(available_width.max(0.0))
+}
+
+/// 按现有字段宽度绘制参数行；空间不足时只在完整参数组之间换行。
+pub fn responsive_parameter_row<R>(
+    ui: &mut egui::Ui,
+    field_widths: &[f32],
+    gap: f32,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    let single_row = fixed_row_fits(ui.available_width(), field_widths, gap);
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = gap;
+        if single_row {
+            ui.horizontal(add_contents)
+        } else {
+            ui.horizontal_wrapped(add_contents)
+        }
+    })
+    .inner
+}
+
+/// 绘制固定宽度的“标签 + 控件”参数组，保证响应式换行时二者始终相邻。
+pub fn parameter_group<R>(
+    ui: &mut egui::Ui,
+    width: f32,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let width = bounded_group_width(ui.available_width(), width);
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, CONTROL_HEIGHT + 16.0),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            ui.set_width(width);
+            ui.set_max_width(width);
+            ui.spacing_mut().item_spacing.y = 2.0;
+            add_contents(ui)
+        },
+    )
+    .inner
+}
+
+/// 绘制固定宽度的行内参数组，使标签、控件和紧邻操作在换行时保持为一个整体。
+pub fn inline_parameter_group<R>(
+    ui: &mut egui::Ui,
+    width: f32,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let width = bounded_group_width(ui.available_width(), width);
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, CONTROL_HEIGHT),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_width(width);
+            ui.set_max_width(width);
+            add_contents(ui)
+        },
+    )
+    .inner
+}
 
 /// 应用外壳与通用操作使用的无文字矢量图标。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,6 +144,7 @@ pub enum AppIcon {
     Export,
     Clear,
     Pause,
+    Resume,
 }
 
 /// 主题调色板集中管理所有界面的色彩映射，确保对比度与科技感视觉表达。
@@ -254,26 +356,26 @@ fn configure_style(style: &mut egui::Style, theme: egui::Theme) {
     let palette = theme_palette(theme);
 
     style.spacing.item_spacing = Vec2::new(SPACE_8, SPACE_8);
-    style.spacing.button_padding = Vec2::new(SPACE_12, 7.0);
+    style.spacing.button_padding = Vec2::new(10.0, 5.0);
     style.spacing.window_margin = Margin::same(SPACE_16 as i8);
     style.spacing.menu_margin = Margin::same(SPACE_8 as i8);
-    style.spacing.interact_size = Vec2::new(40.0, CONTROL_HEIGHT);
+    style.spacing.interact_size = Vec2::new(36.0, CONTROL_HEIGHT);
 
     style
         .text_styles
         .insert(egui::TextStyle::Heading, egui::FontId::proportional(20.0));
     style
         .text_styles
-        .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
+        .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
     style
         .text_styles
-        .insert(egui::TextStyle::Button, egui::FontId::proportional(15.0));
+        .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
     style
         .text_styles
-        .insert(egui::TextStyle::Monospace, egui::FontId::monospace(14.0));
+        .insert(egui::TextStyle::Monospace, egui::FontId::monospace(13.5));
     style
         .text_styles
-        .insert(egui::TextStyle::Small, egui::FontId::proportional(13.0));
+        .insert(egui::TextStyle::Small, egui::FontId::proportional(12.5));
 
     style.visuals = if dark {
         egui::Visuals::dark()
@@ -361,10 +463,10 @@ pub fn warning_text(ui: &egui::Ui) -> Color32 {
 pub fn page_heading(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     let palette = palette_for_ui(ui);
     ui.vertical(|ui| {
-        ui.label(RichText::new(title).size(26.0).strong().color(palette.text));
+        ui.label(RichText::new(title).size(24.0).strong().color(palette.text));
         if !subtitle.is_empty() {
             ui.add_space(2.0);
-            ui.label(RichText::new(subtitle).size(15.0).color(palette.weak));
+            ui.label(RichText::new(subtitle).size(14.0).color(palette.weak));
         }
     });
 }
@@ -452,17 +554,18 @@ pub fn state_card(ui: &mut egui::Ui, title: &str, detail: &str, color: Color32) 
 pub fn text_input<'a>(text: &'a mut String, hint: &'a str) -> TextEdit<'a> {
     TextEdit::singleline(text)
         .hint_text(hint)
-        .margin(Margin::symmetric(10, 7))
+        .desired_width(160.0)
+        .margin(Margin::symmetric(10, 6))
         .font(egui::TextStyle::Body)
 }
 
 /// 绘制带文字标签的二元开关，尺寸与通信页面设计图中的控制开关保持一致。
 pub fn toggle_switch(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Response {
     let palette = palette_for_ui(ui);
-    let font_id = egui::FontId::proportional(14.0);
+    let font_id = egui::FontId::proportional(13.0);
     let label_galley =
         ui.fonts(|fonts| fonts.layout_no_wrap(label.to_owned(), font_id.clone(), palette.text));
-    let switch_size = Vec2::new(38.0, 20.0);
+    let switch_size = Vec2::new(34.0, 18.0);
     let label_spacing = if label.is_empty() { 0.0 } else { SPACE_8 };
     let desired_size = Vec2::new(
         label_galley.size().x + label_spacing + switch_size.x,
@@ -547,6 +650,7 @@ pub fn disclosure_button(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
 }
 
 /// 标准主按钮（高亮强调色填充，白字，统一科技倒角）。
+#[allow(dead_code)]
 pub fn primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let palette = palette_for_ui(ui);
     let button = egui::Button::new(RichText::new(text).color(Color32::WHITE).strong())
@@ -598,24 +702,38 @@ pub fn secondary_button_sized(ui: &mut egui::Ui, text: &str, size: [f32; 2]) -> 
     ui.add_sized(size, button)
 }
 
-/// 危险按钮（红色警示，白字，用于“结束进程”等操作）。
+/// 危险按钮（深红底，细红框，红字，用于“结束进程”、“停止”等破坏性操作）。
 pub fn danger_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let palette = palette_for_ui(ui);
-    let button = egui::Button::new(RichText::new(text).color(Color32::WHITE).strong())
-        .fill(palette.danger_button)
-        .stroke(Stroke::NONE)
+    let button = egui::Button::new(RichText::new(text).color(palette.danger_text).strong())
+        .fill(Color32::from_rgb(38, 18, 22))
+        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(130, 35, 41)))
         .corner_radius(CornerRadius::same(6))
         .min_size(Vec2::new(0.0, CONTROL_HEIGHT));
     ui.add(button)
 }
 
 /// 定制尺寸的危险按钮。
-#[allow(dead_code)]
 pub fn danger_button_sized(ui: &mut egui::Ui, text: &str, size: [f32; 2]) -> egui::Response {
     let palette = palette_for_ui(ui);
-    let button = egui::Button::new(RichText::new(text).color(Color32::WHITE).strong())
-        .fill(palette.danger_button)
-        .stroke(Stroke::NONE)
+    let button = egui::Button::new(RichText::new(text).color(palette.danger_text).strong())
+        .fill(Color32::from_rgb(38, 18, 22))
+        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(130, 35, 41)))
+        .corner_radius(CornerRadius::same(6));
+    ui.add_sized(size, button)
+}
+
+/// 危险边框按钮（暗红底，红框，红字，用于“停止”操作）。
+pub fn danger_outline_button_sized(ui: &mut egui::Ui, text: &str, size: [f32; 2], active: bool) -> egui::Response {
+    let palette = palette_for_ui(ui);
+    let text_color = if active {
+        palette.danger_text
+    } else {
+        Color32::from_rgb(180, 60, 65)
+    };
+    let button = egui::Button::new(RichText::new(text).color(text_color).strong())
+        .fill(Color32::from_rgb(38, 18, 22))
+        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(130, 35, 41)))
         .corner_radius(CornerRadius::same(6));
     ui.add_sized(size, button)
 }
@@ -633,7 +751,7 @@ pub fn small_action_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
 
 /// 状态徽标 / 胶囊标签（用于协议 TCP/UDP、状态 LISTENING/ESTABLISHED、PID 标签等）。
 pub fn badge(ui: &mut egui::Ui, text: &str, fg: Color32, bg: Color32) -> egui::Response {
-    let font_id = egui::FontId::proportional(11.5);
+    let font_id = egui::FontId::proportional(11.0);
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font_id, fg);
     let size = Vec2::new(galley.size().x + 14.0, 22.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
@@ -948,6 +1066,17 @@ pub fn paint_app_icon(painter: &egui::Painter, bounds: egui::Rect, icon: AppIcon
                 );
             }
         }
+        AppIcon::Resume => {
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    center + Vec2::new(-size * 0.24, -size * 0.32),
+                    center + Vec2::new(size * 0.30, 0.0),
+                    center + Vec2::new(-size * 0.24, size * 0.32),
+                ],
+                color,
+                Stroke::NONE,
+            ));
+        }
     }
 }
 
@@ -1144,7 +1273,8 @@ pub fn paint_tool_icon(
 #[cfg(test)]
 mod tests {
     use super::{
-        first_readable_font, font_candidate_paths, monospace_font_candidate_paths, theme_palette,
+        SPACE_8, bounded_group_width, first_readable_font, fixed_row_fits,
+        font_candidate_paths, monospace_font_candidate_paths, text_overflows_width, theme_palette,
     };
     use eframe::egui::{Color32, Theme};
     use std::path::Path;
@@ -1213,5 +1343,27 @@ mod tests {
             assert!(contrast_ratio(Color32::WHITE, palette.primary_button) >= 4.5);
             assert!(contrast_ratio(Color32::WHITE, palette.danger_button) >= 4.5);
         }
+    }
+
+    #[test]
+    fn fixed_parameter_rows_wrap_only_below_their_required_width() {
+        let representative_fields = [190.0, 174.0, 128.0, 64.0, 74.0, 74.0, 78.0, 78.0];
+        assert!(!fixed_row_fits(658.0, &representative_fields, SPACE_8));
+        assert!(fixed_row_fits(926.0, &representative_fields, SPACE_8));
+        assert!(fixed_row_fits(1_200.0, &representative_fields, SPACE_8));
+    }
+
+    #[test]
+    fn parameter_group_width_never_exceeds_parent_width() {
+        assert_eq!(bounded_group_width(120.0, 180.0), 120.0);
+        assert_eq!(bounded_group_width(180.0, 120.0), 120.0);
+        assert_eq!(bounded_group_width(0.0, 120.0), 0.0);
+    }
+
+    #[test]
+    fn overflow_detection_only_marks_text_wider_than_the_visible_cell() {
+        assert!(!text_overflows_width(80.0, 100.0));
+        assert!(!text_overflows_width(100.0, 100.0));
+        assert!(text_overflows_width(100.6, 100.0));
     }
 }

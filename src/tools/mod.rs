@@ -61,7 +61,7 @@ pub trait ToolModule: Send {
     }
 }
 
-/// V0.4.1 的内建工具清单。这里是新增模块唯一需要接入外壳的注册位置。
+/// V0.4.2 的内建工具清单。这里是新增模块唯一需要接入外壳的注册位置。
 pub fn build_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::default();
     registry.register(Box::new(file_lock::FileLockTool::default()));
